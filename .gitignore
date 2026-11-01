@@ -1,0 +1,22 @@
+# Track only what is ours (named my-*); Herdr rewrites its shipped files and keeps its state here too.
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/LICENSE-Lucide.txt
+!/keys.json
+!/settings.json
+!/programs.json
+!/layouts/
+/layouts/*
+!/layouts/my-*.json
+!/themes/
+/themes/*
+!/themes/my-*.json
+!/mods/
+/mods/*
+!/mods/my-*/
+/mods/my-*/*.d.ts
+/mods/my-*/jsconfig.json
+/mods/my-*/**/node_modules/
+/mods/my-*/**/.*
