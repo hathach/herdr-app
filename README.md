@@ -12,9 +12,14 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
 - `mods/my-files`: Herdr's Files panel showing the tree and a file preview together, with the tree on any side and
   resizable in eighths.
 - `mods/my-panel-snap`: snaps the right side panel to the nearest eighth of the work area when a drag ends.
-- `layouts/my-main.json`: Herdr's `main` layout with its agents list and Files and Changes panels pointed at
-  `my-agents`, `my-files` and `my-changes`, a side panel sized by share (default 3/8, no fixed pixel maximum) and
-  `my-panel-snap` in it.
+- `mods/my-github`: Issues and PRs panels for the focused repo through `gh` on the repo's machine: list, filter,
+  search, detail with comments and PR checks, comment, close/reopen behind a confirm. Only the `upstream` and
+  `origin` remotes count, never other forks: the one picked in the panel, else `gh repo set-default`'s, else
+  `upstream`, else `origin`; github.com only. Helper tests: `node --no-warnings --test mods/my-github/github.test.mjs`.
+- `mods/my-tabs`: Herdr's tab bar plus Issues and PRs buttons for the side panel.
+- `layouts/my-main.json`: Herdr's `main` layout with its tab bar, agents list and Files and Changes panels pointed at
+  `my-tabs`, `my-agents`, `my-files` and `my-changes`, Issues and PRs panels from `my-github`, a side panel sized by
+  share (default 3/8, no fixed pixel maximum) and `my-panel-snap` in it.
 
 ## Use on another machine
 

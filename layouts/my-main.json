@@ -1,6 +1,6 @@
 {
   "id": "root",
-  "notice": "Modified from Herdr's main layout (Apache-2.0): the agents list and the Files and Changes panels use my-agents, my-files and my-changes; the panel snaps.",
+  "notice": "Modified from Herdr's main layout (Apache-2.0): the tab bar, agents list and the Files and Changes panels use my-tabs, my-agents, my-files and my-changes; Issues and PRs panels use my-github; the panel snaps.",
   "cloned_from": {
     "name": "main",
     "version": "0.1.10"
@@ -80,7 +80,7 @@
           "id": "tabs",
           "type": "block",
           "content": {
-            "mod": "tabs"
+            "mod": "my-tabs"
           },
           "size": {
             "px": 42
@@ -154,6 +154,26 @@
                       "type": "block",
                       "content": {
                         "mod": "my-changes"
+                      }
+                    },
+                    {
+                      "id": "issues",
+                      "type": "block",
+                      "content": {
+                        "mod": "my-github",
+                        "props": {
+                          "kind": "issues"
+                        }
+                      }
+                    },
+                    {
+                      "id": "prs",
+                      "type": "block",
+                      "content": {
+                        "mod": "my-github",
+                        "props": {
+                          "kind": "prs"
+                        }
                       }
                     }
                   ],
