@@ -1,0 +1,1 @@
+{ "programs": { "claude": { "match": ["claude-code", "claude-ada"] } } }
