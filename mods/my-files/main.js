@@ -3,7 +3,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { languageOf, highlightLines, COLORS } from "./syntax.js";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, run, layout, shared, setShared } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, run, layout, shared, setShared, props } from "herdr";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -22,6 +22,13 @@ const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
 // far: the tree sits at the end of the body, so its share counts back from that edge.
 const SIDES = { left: { direction: "flex_row", axis: "across" }, top: { direction: "flex_col", axis: "down" },
   right: { direction: "flex_row_reverse", axis: "across", far: true }, bottom: { direction: "flex_col_reverse", axis: "down", far: true } };
+
+// Code text uses the terminal's font, at the block's `code_font_size` prop, else the terminal's size (px at zoom 1);
+// row heights and character widths follow it, with ratios for a JetBrains Mono-like font.
+function codeMetrics() {
+  const s = settings(), size = Number(props()?.code_font_size) || Number(s.font_size) || 14;
+  return { family: s.font_family ?? "JetBrains Mono", size, row: Math.round(size * 1.6), char: size * 0.62, numbers: Math.ceil(size * 0.62 * 4) };
+}
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -182,12 +189,14 @@ export default class Files extends View {
         const value = text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text;
         if (LINES.has(lang)) {
           const lines = value.replace(/\n$/, "").split("\n");
-          this.lines = { lines, runs: highlightLines(lang, lines), width: lines.reduce((w, l) => Math.max(w, l.length * 7 + 60), 300) };
+          this.lines = { lines, runs: highlightLines(lang, lines), chars: lines.reduce((n, l) => Math.max(n, l.length), 0) };
           return;
         }
+        const mono = codeMetrics();
+        this.editorFont = { family: mono.family, size: mono.size };
         this.code = EditorState.new({ language: EDITOR[lang] ?? LANG[ext] ?? ext, readonly: true,
           value,
-          font_family: settings().font_family, font_size: 12,
+          font_family: mono.family, font_size: mono.size,
           syntax: Object.fromEntries(["keyword", "string", "comment", "function", "type", "number", "constant"].map(k => [k, t[COLORS[k]]])) });
       } catch { if (current()) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
       finally { cx.notify(); }
@@ -278,15 +287,15 @@ export default class Files extends View {
 
   // Read-only like the editor, without its selection; the same font and line numbers.
   linesView(t) {
-    const { lines, runs, width } = this.lines, gutter = String(lines.length).length * 8 + 20;
-    const row = (i) => h_flex().h(18).flex_none().w_full()
+    const { lines, runs, chars } = this.lines, mono = codeMetrics(), gutter = Math.ceil(String(lines.length).length * mono.char) + 20;
+    const row = (i) => h_flex().h(mono.row).flex_none().w_full()
       .child(div().w(gutter).flex_none().pr(12).text_right().text_color(t.dim).child(String(i + 1)))
       .child(runs[i] ? h_flex().flex_1().min_w(0).children(runs[i].map(([text, category]) =>
         div().flex_none().whitespace_nowrap().when(Boolean(COLORS[category]), e => e.text_color(t[COLORS[category]])).child(text)))
         : div().flex_1().min_w(0).whitespace_nowrap().child(lines[i]));
-    const list = v_virtual_list("files-lines", lines.length, 18, i => String(i), range => Array.from({ length: range.end - range.start }, (_, k) => row(range.start + k))).size_full();
-    return div().flex_1().min_w(0).min_h(0).relative().pt(4).font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
-      .child(div().id("files-lines-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(width).h_full().child(list)))
+    const list = v_virtual_list("files-lines", lines.length, mono.row, i => String(i), range => Array.from({ length: range.end - range.start }, (_, k) => row(range.start + k))).size_full();
+    return div().flex_1().min_w(0).min_h(0).relative().pt(4).font_family(mono.family).text_size(mono.size)
+      .child(div().id("files-lines-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, chars * mono.char + gutter + 30)).h_full().child(list)))
       .child(Scrollbar.vertical("files-lines").viewport_from_layout().absolute().inset_0());
   }
 
@@ -365,6 +374,9 @@ export default class Files extends View {
 
   render(cx) {
     if (key() !== this.context?.key) this.refresh(cx);
+    // The editor takes its font when made: a terminal font change reopens the preview with the new one.
+    const mono = codeMetrics();
+    if (this.code && (this.editorFont.family !== mono.family || this.editorFont.size !== mono.size)) this.show(this.file, cx, this.fileBase);
     const request = findRequest("files");
     if (request && request.id !== this.findId) {
       this.findId = request.id; this.openFind(cx);

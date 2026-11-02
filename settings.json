@@ -3,6 +3,6 @@
   "sounds": {
     "enabled": true
   },
-  "font_size": 13.0,
-  "minimum_contrast": 1.0
+  "font_size": 13,
+  "minimum_contrast": 1
 }

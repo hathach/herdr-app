@@ -27,7 +27,9 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
 - `mods/my-tabs`: Herdr's tab bar plus Issues and PRs buttons for the side panel.
 - `layouts/my-main.json`: Herdr's `main` layout with its tab bar, agents list and Files and Changes panels pointed at
   `my-tabs`, `my-agents`, `my-files` and `my-changes`, Issues and PRs panels from `my-github`, a side panel sized by
-  share (default 3/8, no fixed pixel maximum) and `my-panel-snap` in it.
+  share (default 3/8, no fixed pixel maximum) and `my-panel-snap` in it. The Files and Changes blocks' prop
+  `code_font_size` (12) sizes the diff and file preview text, in the terminal's font; without it they use the
+  terminal's size.
 
 ## Use on another machine
 

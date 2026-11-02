@@ -146,14 +146,20 @@
                       "id": "files",
                       "type": "block",
                       "content": {
-                        "mod": "my-files"
+                        "mod": "my-files",
+                        "props": {
+                          "code_font_size": 12
+                        }
                       }
                     },
                     {
                       "id": "changes",
                       "type": "block",
                       "content": {
-                        "mod": "my-changes"
+                        "mod": "my-changes",
+                        "props": {
+                          "code_font_size": 12
+                        }
                       }
                     },
                     {

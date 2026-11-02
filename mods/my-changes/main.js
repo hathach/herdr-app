@@ -3,7 +3,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { diffRows, splitRows, wholeSides, colourSides, paint, CUT } from "./diff.js";
 import { languageOf, COLORS } from "./syntax.js";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run, layout, shared, setShared } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run, layout, shared, setShared, props } from "herdr";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -58,20 +58,27 @@ function findPaths(list, query, path = (x) => x) {
     .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]).map((r) => r[3]);
 }
 
+// Code text uses the terminal's font, at the block's `code_font_size` prop, else the terminal's size (px at zoom 1);
+// row heights and character widths follow it, with ratios for a JetBrains Mono-like font.
+function codeMetrics() {
+  const s = settings(), size = Number(props()?.code_font_size) || Number(s.font_size) || 14;
+  return { family: s.font_family ?? "JetBrains Mono", size, row: Math.round(size * 1.6), char: size * 0.62, numbers: Math.ceil(size * 0.62 * 4) };
+}
+
 // A splitter's share lands on the nearest eighth when its drag ends, like the side panel's.
 const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
 
 export default class Changes extends View {
-  init(props, cx) {
+  init(given, cx) {
     // As a pane (opened from the panel) it stays on the repo it was opened for instead of following focus.
-    this.pinned = props?.root ? { cwd: props.root, on: props.on ?? null } : null;
+    this.pinned = given?.root ? { cwd: given.root, on: given.on ?? null } : null;
     const mode = this.pinned ? "pane" : "panel";
     this.splitKey = `split:${mode}`; this.scopeKey = `scope:${mode}`;
     this.split = localStorage.getItem(this.splitKey) !== "false";
-    this.scope = props?.scope ?? localStorage.getItem(this.scopeKey) ?? "work";
+    this.scope = given?.scope ?? localStorage.getItem(this.scopeKey) ?? "work";
     this.listKey = `list:${mode}`; this.listShare = Number(localStorage.getItem(this.listKey)) || null;
-    this.place = this.placeKey(); this.context = this.key(); this.open = props?.open ?? null;
-    this.files = []; this.rows = []; this.pairs = []; this.diffWidth = 0; this.message = ""; this.handle = cx.focus_handle();
+    this.place = this.placeKey(); this.context = this.key(); this.open = given?.open ?? null;
+    this.files = []; this.rows = []; this.pairs = []; this.diffChars = 0; this.message = ""; this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "Commit message" });
     this.input.on("change", (_e, cx) => {
       const hadMessage = Boolean(this.message.trim());
@@ -124,7 +131,7 @@ export default class Changes extends View {
 
   openPane() {
     if (!this.root || this.context !== this.key()) return;
-    run("pane.split", { direction: "right", mod: "my-changes", props: { root: this.root, on: this.on, open: this.open, scope: this.scope } });
+    run("pane.split", { direction: "right", mod: "my-changes", props: { root: this.root, on: this.on, open: this.open, scope: this.scope, code_font_size: props()?.code_font_size } });
   }
 
   watch(root, cx) {
@@ -265,7 +272,7 @@ export default class Changes extends View {
     this.rows = diffRows(lines);
     if (coloured) paint(this.rows, coloured);
     this.pairs = splitRows(this.rows);
-    this.diffWidth = Math.max(300, ...lines.map(line => line.length * 7 + 50));
+    this.diffChars = lines.reduce((n, line) => Math.max(n, line.length), 0);
   }
 
   pick(path, cx) {
@@ -329,21 +336,21 @@ export default class Changes extends View {
   lineCell(line, number, t, runs) {
     const tint = line?.kind === "+" ? t.ansi2 + "18" : line?.kind === "-" ? t.ansi1 + "18" : line ? null : t.raised + "60";
     return h_flex().gap(10).when(Boolean(tint), (e) => e.bg(tint))
-      .child(div().w(30).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
+      .child(div().w(this.mono.numbers).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
       .child(runs ? h_flex().flex_1().min_w(0).overflow_hidden().children(runs.map(([text, category]) =>
         div().flex_none().whitespace_nowrap().when(Boolean(COLORS[category]), (e) => e.text_color(t[COLORS[category]])).child(text)))
         : div().flex_1().min_w(0).truncate().child(line?.text ?? ""));
   }
 
   diffRow(row, t) {
-    if (row.kind === "@") return div().w_full().px(12).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(row.text);
+    if (row.kind === "@") return div().w_full().px(12).h(this.mono.row).flex_none().truncate().bg(t.raised).text_color(t.dim).child(row.text);
     const old = row.kind === "-";
-    return this.lineCell(row, old ? row.old : row.new, t, old ? row.oldRuns : row.newRuns).w_full().h(20).flex_none();
+    return this.lineCell(row, old ? row.old : row.new, t, old ? row.oldRuns : row.newRuns).w_full().h(this.mono.row).flex_none();
   }
 
   splitRow(pair, t) {
     if (!("left" in pair)) return this.diffRow(pair, t);
-    return h_flex().w_full().h(20).flex_none()
+    return h_flex().w_full().h(this.mono.row).flex_none()
       .child(this.lineCell(pair.left, pair.left?.old, t, pair.left?.oldRuns).flex_1().min_w(0).h_full())
       .child(div().w(1).h_full().flex_none().bg(t.border))
       .child(this.lineCell(pair.right, pair.right?.new, t, pair.right?.newRuns).flex_1().min_w(0).h_full());
@@ -397,11 +404,12 @@ export default class Changes extends View {
       setShared("panel.find", null);
     }
     const shown = this.shown();
+    this.mono = codeMetrics();
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     const nothing = this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
     const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t)] : [this.rows, (r, t) => this.diffRow(r, t)];
-    const list = v_virtual_list("changes-diff", items.length, 20, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full();
+    const list = v_virtual_list("changes-diff", items.length, this.mono.row, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full();
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.findFocused) { this.closeFind(true); cx.stop_propagation(); cx.notify(); return; }
@@ -427,9 +435,9 @@ export default class Changes extends View {
       .child(div().id("changes-divider").h(5).w_full().flex_none().flex().flex_col().justify_center().cursor_row_resize().child(div().h(1).w_full().bg(t.border))
         .on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
-      .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
+      .child(div().flex_1().min_h(0).relative().font_family(this.mono.family).text_size(this.mono.size)
         // In a horizontal scroller the list keeps its last measured width, leaving the side-by-side divider off centre.
-        .child(this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(this.diffWidth).h_full().child(list)))
+        .child(this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, this.diffChars * this.mono.char + this.mono.numbers + 30)).h_full().child(list)))
         .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
         .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child("Select a file to view its changes"))))
       // While dragging, a cover keeps the pointer's moves and release even over the diff.
