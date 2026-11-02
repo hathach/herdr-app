@@ -1,7 +1,7 @@
 // node --no-warnings --test mods/my-github/github.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseRemote, parseRemotes, ghDefault, pickRepo, classifyError, classifyRejection, parseChecks, ago, writeOutcome, matchingIds, commentLanded } from "./github.js";
+import { parseRemote, parseRemotes, ghDefault, pickRepo, classifyError, classifyRejection, parseChecks, ago, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
 
 test("parseRemote reads ssh, scp-like and https URLs", () => {
   const want = { host: "github.com", repo: "hathach/tinyusb" };
@@ -112,4 +112,22 @@ test("commentLanded needs a new matching comment, not an older identical one", (
   assert.equal(commentLanded(baseline, [old, other], "+1"), false);
   assert.equal(commentLanded(baseline, [old, other, { id: "C", viewerDidAuthor: false, body: "+1" }], "+1"), false);
   assert.equal(commentLanded(baseline, [old, other, { id: "D", viewerDidAuthor: true, body: "+1\n" }], "+1"), true);
+});
+
+test("exactNumber", () => {
+  assert.equal(exactNumber("123"), 123);
+  assert.equal(exactNumber(" #42 "), 42);
+  for (const q of ["", "#", "0", "12a", "1 2", "99999999999999999999"]) assert.equal(exactNumber(q), null, q);
+});
+
+test("findItems matches number or title, every term", () => {
+  const items = [{ number: 7, title: "Fix USB reset" }, { number: 1234, title: "Login bug" }, { number: 123, title: "Docs" }, { number: 12, title: "usb login" }];
+  const numbers = (q) => findItems(items, q).map((it) => it.number);
+  assert.deepEqual(numbers(""), [7, 1234, 123, 12]);
+  assert.deepEqual(numbers("usb"), [7, 12]);
+  assert.deepEqual(numbers("LOGIN bug"), [1234]);
+  assert.deepEqual(numbers("#12"), [12, 1234, 123]);
+  assert.deepEqual(numbers("123"), [123, 1234]);
+  assert.deepEqual(findItems([{ number: 1234, title: "x" }], "123").map((it) => it.number), [1234]);
+  assert.deepEqual(numbers("nothing"), []);
 });

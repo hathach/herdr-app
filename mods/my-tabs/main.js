@@ -1,7 +1,7 @@
 // Modified from Herdr's shipped `tabs` mod (Apache-2.0): Issues and PRs side panel buttons.
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, focused, nextCommand } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -12,11 +12,29 @@ function find(node, id) {
   return null;
 }
 
+// The shared setting lists only Herdr's own panels; ours count whenever the panel stack has them.
+function enabledPanels(body) {
+  const children = body?.children?.map(c => c.id) ?? [];
+  return [...(shared("workspace.panels") ?? ["files", "changes"]), "issues", "prs"].filter(id => children.includes(id));
+}
 
 export default class Tabs extends View {
-  init() {
+  init(_props, cx) {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    cx.spawn(async () => { for (;;) if (await nextCommand() === "find") this.find(); });
+  }
+
+  // The find key: shows the side panel (its current child, else Files) and asks that panel, for this space and tab,
+  // to open its find row. A panel copy started by this show still sees the request.
+  find() {
+    const body = find(layout(), "panel-body"), space = spaces().find(p => p.active), f = focused();
+    const enabled = enabledPanels(body), target = [body?.active, "files", enabled[0]].find(id => enabled.includes(id));
+    if (!target || !space) return;
+    this.space = space.id; this.pending = { want: target, until: Date.now() + 1000 };
+    this.panels[space.id] = target; localStorage.setItem("panels", JSON.stringify(this.panels));
+    run("layout.select", { stack: "panel-body", child: target }); run("layout.show", { id: "panel" });
+    setShared("panel.find", { id: `${Date.now()}.${Math.random()}`, panel: target, space: space.id, tab: f?.tab ?? null, at: Date.now() });
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -79,8 +97,7 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    // The shared setting lists only Herdr's own panels; ours count whenever the panel stack has them.
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), ...["issues", "prs"].filter(id => body?.children?.some(c => c.id === id))];
+    const enabled = enabledPanels(body);
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;

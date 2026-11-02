@@ -101,3 +101,19 @@ export function ago(iso, now = Date.now()) {
   }
   return "now";
 }
+
+// "123" or "#123" -> 123; anything else -> null.
+export function exactNumber(query) {
+  const m = /^#?(\d+)$/.exec(query.trim()), n = m && Number(m[1]);
+  return n && Number.isSafeInteger(n) ? n : null;
+}
+
+// Local find in the loaded list: every whitespace-separated term in `#<number> <title>`, case-insensitive. A numeric
+// query ranks its exact number first, then numbers starting with it; otherwise list order.
+export function findItems(items, query) {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean), n = exactNumber(query);
+  if (!terms.length) return items;
+  const rank = (it) => n === null || it.number === n ? 0 : String(it.number).startsWith(String(n)) ? 1 : 2;
+  return items.filter((it) => terms.every((term) => `#${it.number} ${it.title}`.toLowerCase().includes(term)))
+    .map((it, i) => [rank(it), i, it]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map(([, , it]) => it);
+}

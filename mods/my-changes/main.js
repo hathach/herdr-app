@@ -1,7 +1,9 @@
 // Modified from Herdr's shipped `changes` mod (Apache-2.0): side-by-side view, open in a pane, branch scope.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run } from "herdr";
+import { diffRows, splitRows, wholeSides, colourSides, paint, CUT } from "./diff.js";
+import { languageOf, COLORS } from "./syntax.js";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run, layout, shared, setShared } from "herdr";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -14,38 +16,6 @@ function location() {
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 
-// Numbers each diff line once, so a frame only draws the rows on screen.
-function diffRows(lines) {
-  let old = 0, next = 0;
-  return lines.map((line) => {
-    const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
-    if (match) { old = +match[1]; next = +match[2]; return { kind: "@", text: line }; }
-    const kind = line[0];
-    if (kind === "-") return { kind, old: old++, text: line.slice(1) || " " };
-    if (kind === "+") return { kind, new: next++, text: line.slice(1) || " " };
-    if (kind === " ") return { kind, old: old++, new: next++, text: line.slice(1) || " " };
-    return { kind: "", text: line };
-  });
-}
-
-// Pairs each run of removed lines with the added lines after it: old on the left, new on the right.
-function splitRows(rows) {
-  const out = [];
-  for (let i = 0; i < rows.length;) {
-    const row = rows[i];
-    if (row.kind !== "-" && row.kind !== "+") {
-      out.push(row.kind === " " ? { left: row, right: row } : row);
-      i++; continue;
-    }
-    // A "\ No newline at end of file" marker stays with the line above it instead of ending the run.
-    const take = (kind, list) => { while (rows[i]?.kind === kind || (list.length && rows[i]?.kind === "" && rows[i].text.startsWith("\\"))) list.push(rows[i++]); };
-    const del = [], add = [];
-    take("-", del); take("+", add);
-    for (let j = 0; j < Math.max(del.length, add.length); j++) out.push({ left: del[j], right: add[j] });
-  }
-  return out;
-}
-
 // The repo's default branch: what a PR from this checkout targets unless told otherwise.
 async function findBase(git) {
   const head = await git(["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]);
@@ -54,6 +24,38 @@ async function findBase(git) {
     if ((await git(["rev-parse", "--verify", "-q", `refs/remotes/${ref}`])).code === 0) return ref;
   }
   throw new Error("No base branch: origin/HEAD, origin/main and origin/master are all missing");
+}
+
+function find(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = find(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function panelShown(panel) {
+  const root = layout();
+  return find(root, "panel")?.hidden !== true && find(root, "panel-body")?.active === panel;
+}
+
+const here = () => `${focused()?.space}|${focused()?.tab ?? null}`;
+
+// The tab bar's find key (`panel.find`): a request for this panel, made for the space and tab shown now.
+function findRequest(panel) {
+  const r = shared("panel.find");
+  return r?.panel === panel && Date.now() - r.at < 2000 && `${r.space}|${r.tab}` === here() && panelShown(panel) ? r : null;
+}
+
+// Every whitespace-separated term in the path, case-insensitive; the last term inside the file name ranks first,
+// then shorter paths.
+function findPaths(list, query, path = (x) => x) {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean), last = terms.at(-1);
+  if (!terms.length) return list;
+  return list.map((x) => [path(x).toLowerCase(), x]).filter(([p]) => terms.every((t) => p.includes(t)))
+    .map(([p, x], i) => [p.slice(p.lastIndexOf("/") + 1).includes(last) ? 0 : 1, p.length, i, x])
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]).map((r) => r[3]);
 }
 
 // A splitter's share lands on the nearest eighth when its drag ends, like the side panel's.
@@ -79,6 +81,11 @@ export default class Changes extends View {
     this.input.on("submit", (_e, cx) => this.commit(cx));
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
+    this.query = ""; this.findInput = InputState.new({ placeholder: "Find changed file" });
+    this.findInput.on("change", (_e, cx) => { this.query = this.findInput.value().trim(); cx.notify(); });
+    this.findInput.on("submit", (_e, cx) => { const first = this.shown()[0]; if (first && this.open !== first.path) this.pick(first.path, cx); });
+    this.findInput.on("focus", (_e, cx) => { this.findFocused = this.findLanded = true; cx.notify(); });
+    this.findInput.on("blur", (_e, cx) => { this.findFocused = false; cx.notify(); });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
   }
@@ -216,9 +223,11 @@ export default class Changes extends View {
   }
 
   async load(path, context) {
-    const file = this.files.find((f) => f.path === path), root = this.root, on = this.on;
+    // Only the newest load publishes: a refresh can start another load of the same file before this one ends.
+    const file = this.files.find((f) => f.path === path), root = this.root, on = this.on, lang = languageOf(path), gen = this.loads = (this.loads ?? 0) + 1;
     if (!file) return;
-    let lines;
+    // source: what the lexer reads for both sides, a fresh file's text or the whole-file diff.
+    let lines, source = null;
     if (file.fresh || (!this.from && file.status === "A")) {
       const text = await readTextFile(`${root}/${path}`, { on }).catch(() => null);
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
@@ -226,18 +235,35 @@ export default class Changes extends View {
       else {
         file.add = countLines(text);
         lines = [`@@ -0,0 +1,${file.add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, 1500).map(l => `+${l}`)];
+        source = { kind: "fresh", text };
       }
     } else {
-      const r = await exec("git", [...READ, "diff", ...(this.from ? [this.from] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", path], { cwd: root, on });
+      const diff = [...READ, "diff", ...(this.from ? [this.from] : []), "--no-ext-diff", "--no-textconv", "--no-color"];
+      // The same diff as one whole-file hunk gives each side's lexical state from line 1, so a hunk that starts inside
+      // a comment or string colours right. Failing that, the diff draws uncoloured.
+      const whole = lang ? exec("git", [...diff, "--unified=100000000", "--", path], { cwd: root, on }).catch(() => null) : null;
+      const r = await exec("git", [...diff, "--", path], { cwd: root, on });
       if (r.code !== 0) throw new Error(r.stderr);
       const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
       lines = first < 0 ? [file.binary ? "Binary file changed" : "No text diff available"] : all.slice(first);
+      const w = whole && first >= 0 && await whole;
+      if (w?.code === 0) source = { kind: "diff", text: w.stdout };
     }
-    if (this.key() === context && this.open === path) this.setLines(lines.slice(0, 1500).map(line => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line));
+    if (this.key() === context && this.open === path && gen === this.loads) this.setLines(lines.slice(0, 1500).map(line => line.length > 4000 ? line.slice(0, 4000) + CUT : line), lang && source && this.colour(source, lang));
   }
 
-  setLines(lines) {
+  // Lexing is the slow part of a load, and a refresh mostly reloads the same file unchanged.
+  colour({ kind, text }, lang) {
+    const c = this.coloured;
+    if (c?.lang === lang && c.kind === kind && c.text === text) return c.sides;
+    const sides = kind === "fresh" ? { old: [], new: text.replace(/\n$/, "").split("\n") } : wholeSides(text);
+    this.coloured = { lang, kind, text, sides: colourSides(sides, lang) };
+    return this.coloured.sides;
+  }
+
+  setLines(lines, coloured) {
     this.rows = diffRows(lines);
+    if (coloured) paint(this.rows, coloured);
     this.pairs = splitRows(this.rows);
     this.diffWidth = Math.max(300, ...lines.map(line => line.length * 7 + 50));
   }
@@ -252,6 +278,34 @@ export default class Changes extends View {
       cx.notify();
     });
     cx.notify();
+  }
+
+  shown() {
+    if (this.found?.files !== this.files || this.found.query !== this.query) this.found = { files: this.files, query: this.query, list: findPaths(this.files, this.query, (f) => f.path) };
+    return this.found.list;
+  }
+
+  // Focused again a moment later unless it landed, as Herdr's own dialogs do: a row mounted by this render may not
+  // take it at once.
+  openFind(cx) {
+    this.finding = true; this.findLanded = false; this.findPlace = this.placeKey(); this.findInput.focus();
+    const at = here();
+    cx.timer.after(600, () => { if (this.finding && !this.findLanded && here() === at && panelShown("changes")) this.findInput.focus(); });
+  }
+
+  // Escape gives the keyboard back to the pane it came from.
+  closeFind(back = false) {
+    this.finding = false; this.query = ""; this.findInput.set_value("");
+    const f = focused();
+    if (back && (f?.pane || f?.terminal)) run("pane.focus", f.pane ? { pane: f.pane } : { terminal: f.terminal });
+  }
+
+  findRow(t, count) {
+    return h_flex().id("find").flex_none().px(10).py(5).gap(6).items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.dim)
+      .child(div().id("find-box").flex_1().min_w(0).h(24).px(8).flex().items_center().rounded(6).border_1().border_color(this.findFocused ? t.accent : t.border).cursor_text()
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.findInput).h_full().text_size(11).text_color(t.foreground)))
+      .child(div().flex_none().child(count))
+      .child(this.headerButton("find-close", "mods/my-changes/x.svg", false, "Close find (Esc)", (cx) => { this.closeFind(); cx.notify(); }, t));
   }
 
   commit(cx) {
@@ -272,24 +326,27 @@ export default class Changes extends View {
   }
 
   // An absent line (the empty side of a split row) is shaded.
-  lineCell(line, number, t) {
+  lineCell(line, number, t, runs) {
     const tint = line?.kind === "+" ? t.ansi2 + "18" : line?.kind === "-" ? t.ansi1 + "18" : line ? null : t.raised + "60";
     return h_flex().gap(10).when(Boolean(tint), (e) => e.bg(tint))
       .child(div().w(30).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
-      .child(div().flex_1().min_w(0).truncate().child(line?.text ?? ""));
+      .child(runs ? h_flex().flex_1().min_w(0).overflow_hidden().children(runs.map(([text, category]) =>
+        div().flex_none().whitespace_nowrap().when(Boolean(COLORS[category]), (e) => e.text_color(t[COLORS[category]])).child(text)))
+        : div().flex_1().min_w(0).truncate().child(line?.text ?? ""));
   }
 
   diffRow(row, t) {
     if (row.kind === "@") return div().w_full().px(12).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(row.text);
-    return this.lineCell(row, row.kind === "-" ? row.old : row.new, t).w_full().h(20).flex_none();
+    const old = row.kind === "-";
+    return this.lineCell(row, old ? row.old : row.new, t, old ? row.oldRuns : row.newRuns).w_full().h(20).flex_none();
   }
 
   splitRow(pair, t) {
     if (!("left" in pair)) return this.diffRow(pair, t);
     return h_flex().w_full().h(20).flex_none()
-      .child(this.lineCell(pair.left, pair.left?.old, t).flex_1().min_w(0).h_full())
+      .child(this.lineCell(pair.left, pair.left?.old, t, pair.left?.oldRuns).flex_1().min_w(0).h_full())
       .child(div().w(1).h_full().flex_none().bg(t.border))
-      .child(this.lineCell(pair.right, pair.right?.new, t).flex_1().min_w(0).h_full());
+      .child(this.lineCell(pair.right, pair.right?.new, t, pair.right?.newRuns).flex_1().min_w(0).h_full());
   }
 
   startDrag(cx) {
@@ -332,6 +389,14 @@ export default class Changes extends View {
 
   render(cx) {
     if (this.key() !== this.context) this.refresh(cx);
+    // A row belongs to the place it opened for; a scope switch keeps it.
+    if (this.finding && this.findPlace !== this.placeKey()) this.closeFind();
+    const request = !this.pinned && findRequest("changes");
+    if (request && request.id !== this.findId) {
+      this.findId = request.id; this.openFind(cx);
+      setShared("panel.find", null);
+    }
+    const shown = this.shown();
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     const nothing = this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
@@ -339,24 +404,26 @@ export default class Changes extends View {
     const list = v_virtual_list("changes-diff", items.length, 20, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full();
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((e, cx) => {
+        if (e.key === "escape" && this.findFocused) { this.closeFind(true); cx.stop_propagation(); cx.notify(); return; }
         if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
       })
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Changes"))
-        .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files`))
+        .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(this.query ? `${shown.length} of ${this.files.length} files` : `${this.files.length} files`))
         .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`))
         .child(this.headerButton("changes-split", "mods/my-changes/columns.svg", this.split, this.split ? "Unified view" : "Side-by-side view", (cx) => this.toggleSplit(cx), t))
         .when(!this.pinned, (e) => e.child(this.headerButton("changes-pane", "mods/my-changes/open-pane.svg", false, "Open in a pane", () => this.openPane(), t))))
       .child(this.scopeBar(t))
+      .when(Boolean(this.finding), (e) => e.child(this.findRow(t, this.query ? `${shown.length} found` : "")))
       .child(v_flex().id("changes-body").flex_1().min_h(0).relative()
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
-      .child(v_flex().id("changes-list").flex_none().h(this.listShare ? `${this.listShare * 100}%` : Math.min(200, Math.max(44, this.files.length * 28 + 12))).overflow_y_scrollbar().p(6).children(this.files.map((f) => {
+      .child(v_flex().id("changes-list").flex_none().h(this.listShare ? `${this.listShare * 100}%` : Math.min(200, Math.max(44, this.files.length * 28 + 12))).overflow_y_scrollbar().p(6).children(shown.map((f) => {
         const parts = f.path.split("/"), name = parts.pop();
         return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
           .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
           .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
           .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
-      })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? nothing : "No folder")))))
+      })).when(!shown.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : !this.root ? "No folder" : this.files.length ? "No matching changed files" : nothing)))))
       .child(div().id("changes-divider").h(5).w_full().flex_none().flex().flex_col().justify_center().cursor_row_resize().child(div().h(1).w_full().bg(t.border))
         .on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
