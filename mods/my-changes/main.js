@@ -56,15 +56,18 @@ async function findBase(git) {
   throw new Error("No base branch: origin/HEAD, origin/main and origin/master are all missing");
 }
 
+// A splitter's share lands on the nearest eighth when its drag ends, like the side panel's.
+const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
+
 export default class Changes extends View {
   init(props, cx) {
     // As a pane (opened from the panel) it stays on the repo it was opened for instead of following focus.
     this.pinned = props?.root ? { cwd: props.root, on: props.on ?? null } : null;
     const mode = this.pinned ? "pane" : "panel";
     this.splitKey = `split:${mode}`; this.scopeKey = `scope:${mode}`;
-    const saved = localStorage.getItem(this.splitKey);
-    this.split = saved === null ? Boolean(this.pinned) : saved === "true";
+    this.split = localStorage.getItem(this.splitKey) !== "false";
     this.scope = props?.scope ?? localStorage.getItem(this.scopeKey) ?? "work";
+    this.listKey = `list:${mode}`; this.listShare = Number(localStorage.getItem(this.listKey)) || null;
     this.place = this.placeKey(); this.context = this.key(); this.open = props?.open ?? null;
     this.files = []; this.rows = []; this.pairs = []; this.diffWidth = 0; this.message = ""; this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "Commit message" });
@@ -289,6 +292,26 @@ export default class Changes extends View {
       .child(this.lineCell(pair.right, pair.right?.new, t).flex_1().min_w(0).h_full());
   }
 
+  startDrag(cx) {
+    this.drag = true;
+    cx.stop_propagation(); cx.notify();
+  }
+
+  // The drag cover spans the list and the diff, so the pointer's height in it is the list's share.
+  dragTo(event, cx) {
+    if (!this.drag || !event.bounds) return;
+    this.listShare = Math.min(7 / 8, Math.max(1 / 8, event.local_position.y / event.bounds.height));
+    cx.notify();
+  }
+
+  endDrag(cx) {
+    if (!this.drag) return;
+    this.drag = false;
+    // A press with no move leaves a list that still fits its files as it is.
+    if (this.listShare) { this.listShare = eighth(this.listShare); localStorage.setItem(this.listKey, String(this.listShare)); }
+    cx.notify();
+  }
+
   headerButton(id, icon, active, tip, onClick, t, spinning = false) {
     return div().id(id).size(24).flex().flex_none().items_center().justify_center().rounded(6).cursor_pointer()
       .bg(active ? t.selected : t.background).text_color(active ? t.foreground : t.muted).hover((s) => s.bg(t.hover))
@@ -313,6 +336,7 @@ export default class Changes extends View {
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     const nothing = this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
     const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t)] : [this.rows, (r, t) => this.diffRow(r, t)];
+    const list = v_virtual_list("changes-diff", items.length, 20, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full();
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
@@ -324,20 +348,26 @@ export default class Changes extends View {
         .child(this.headerButton("changes-split", "mods/my-changes/columns.svg", this.split, this.split ? "Unified view" : "Side-by-side view", (cx) => this.toggleSplit(cx), t))
         .when(!this.pinned, (e) => e.child(this.headerButton("changes-pane", "mods/my-changes/open-pane.svg", false, "Open in a pane", () => this.openPane(), t))))
       .child(this.scopeBar(t))
-      .child(v_flex().id("changes-list").flex_none().h(Math.min(200, Math.max(44, this.files.length * 28 + 12))).overflow_y_scrollbar().p(6).border_b(1).border_color(t.border).children(this.files.map((f) => {
+      .child(v_flex().id("changes-body").flex_1().min_h(0).relative()
+      .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
+      .child(v_flex().id("changes-list").flex_none().h(this.listShare ? `${this.listShare * 100}%` : Math.min(200, Math.max(44, this.files.length * 28 + 12))).overflow_y_scrollbar().p(6).children(this.files.map((f) => {
         const parts = f.path.split("/"), name = parts.pop();
         return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
           .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
           .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
           .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
       })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? nothing : "No folder")))))
+      .child(div().id("changes-divider").h(5).w_full().flex_none().flex().flex_col().justify_center().cursor_row_resize().child(div().h(1).w_full().bg(t.border))
+        .on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
       .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
-        .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar()
-          .child(div().w_full().min_w(this.split ? this.diffWidth * 2 : this.diffWidth).h_full().child(v_virtual_list("changes-diff", items.length, 20, (i) => String(i),
-            (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full())))
+        // In a horizontal scroller the list keeps its last measured width, leaving the side-by-side divider off centre.
+        .child(this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(this.diffWidth).h_full().child(list)))
         .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
         .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child("Select a file to view its changes"))))
+      // While dragging, a cover keeps the pointer's moves and release even over the diff.
+      .when(Boolean(this.drag), (e) => e.child(div().id("changes-drag").absolute().inset_0().cursor_row_resize()
+        .on_mouse_move((ev, cx) => this.dragTo(ev, cx)).on_mouse_up("left", (_ev, cx) => this.endDrag(cx)).on_hover((inside, cx) => { if (!inside) this.endDrag(cx); }))))
       .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))
       .child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
         .child(div().id("commit-message").flex_1().min_w(0).h(32).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))

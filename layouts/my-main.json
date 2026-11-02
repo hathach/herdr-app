@@ -1,6 +1,6 @@
 {
   "id": "root",
-  "notice": "Modified from Herdr's main layout (Apache-2.0): the Changes panel uses my-changes.",
+  "notice": "Modified from Herdr's main layout (Apache-2.0): the agents list and the Files and Changes panels use my-agents, my-files and my-changes; the panel snaps.",
   "cloned_from": {
     "name": "main",
     "version": "0.1.10"
@@ -41,7 +41,7 @@
               "id": "agents",
               "type": "block",
               "content": {
-                "mod": "agents"
+                "mod": "my-agents"
               },
               "size": {
                 "weight": 1
@@ -94,6 +94,9 @@
             {
               "id": "main",
               "type": "block",
+              "size": {
+                "weight": 1
+              },
               "content": {
                 "tab": "active",
                 "pane": {
@@ -123,7 +126,18 @@
             {
               "id": "panel",
               "type": "column",
+              "resizable": false,
               "children": [
+                {
+                  "id": "panel-snap",
+                  "type": "block",
+                  "content": {
+                    "mod": "my-panel-snap"
+                  },
+                  "size": {
+                    "px": 0
+                  }
+                },
                 {
                   "id": "panel-body",
                   "type": "stack",
@@ -132,7 +146,7 @@
                       "id": "files",
                       "type": "block",
                       "content": {
-                        "mod": "files"
+                        "mod": "my-files"
                       }
                     },
                     {
@@ -147,10 +161,9 @@
                 }
               ],
               "size": {
-                "px": 368
+                "weight": 0.6
               },
               "min": 280,
-              "max": 900,
               "hidden": true
             }
           ],
