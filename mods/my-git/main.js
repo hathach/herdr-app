@@ -4,14 +4,14 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, theme, layout, shared, setShared } from "herdr";
 import { READ, loadRefs, loadPage, ago } from "./git.js";
+import { sizedPart, panelSize, partPx, scaler } from "./part-size.js";
 
 const SELECTION = "git.selection", POLL = 10000;
 
-// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1): text, the heights around it and text columns scale
-// from 13; icons and indents stay.
-let scale = 1;
-const z = (px) => px * scale;
-const panelScale = () => (Number(shared("panel.text_size.git")) || 13) / 13;
+// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1) sizes its header and notes; the branch picker and
+// the commits (the `history` part) add their own offset (part-size.js). Text, the heights around it and text columns
+// scale from 13; icons and indents stay.
+let z = scaler(13);
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -40,7 +40,7 @@ const branchName = (ref) => ref.replace(/^refs\/(heads|remotes)\//, "");
 export default class Git extends View {
   init(_props, cx) {
     // A selection kept in saved shared state belongs to an earlier start.
-    setShared(SELECTION, null);
+    setShared(SELECTION, null); this.parts = {};
     // listGen: the repo and branch shown; a read applies only while it stands. picks numbers each publication.
     this.listGen = 0; this.picks = 0;
     this.choices = JSON.parse(localStorage.getItem("branches") ?? "{}");
@@ -56,7 +56,7 @@ export default class Git extends View {
   }
 
   dropHistory() {
-    this.tip = null; this.commits = []; this.more = false; this.pages = 0; this.moved = null; this.selected = null;
+    this.tip = null; this.commits = []; this.more = false; this.pages = 0; this.moved = null; this.selected = null; this.pageError = null;
   }
 
   git(repo) { return (args) => exec("git", [...READ, ...args], { cwd: repo.root, on: repo.on }); }
@@ -149,14 +149,14 @@ export default class Git extends View {
   loadMore(cx) {
     if (this.paging || !this.more || !this.repo) return;
     const gen = this.listGen, tip = this.tip, skip = this.commits.length, git = this.git(this.repo);
-    this.paging = true;
+    this.paging = true; this.pageError = null;
     cx.spawn(async (cx) => {
       try {
         const page = await loadPage(git, tip, skip);
         if (gen === this.listGen && tip === this.tip && skip === this.commits.length) {
           this.commits = [...this.commits, ...page.commits]; this.more = page.more; this.pages++;
         }
-      } catch (e) { if (gen === this.listGen) this.note = `Load more failed: ${e.message ?? e}`; }
+      } catch (e) { if (gen === this.listGen) this.pageError = `Load more failed: ${e.message ?? e}`; }
       finally { this.paging = false; cx.notify(); }
     });
     cx.notify();
@@ -217,62 +217,63 @@ export default class Git extends View {
   }
 
   // Virtual-list rows take no handlers: the list's on_item_click picks by key.
-  branchRow(row, t) {
-    if (row.group) return div().h(z(24)).px(8).flex().items_end().pb(3).text_size(z(11)).text_color(t.dim).child(row.label);
+  branchRow(row, t, hz) {
+    if (row.group) return div().h(hz(24)).px(8).flex().items_end().pb(3).text_size(hz(11)).text_color(t.dim).child(row.label);
     const on = row.key === (this.branch ?? "current");
-    return h_flex().h(z(28)).px(8).gap(8).items_center().rounded(7).when(on, (e) => e.bg(t.selected))
+    return h_flex().h(hz(28)).px(8).gap(8).items_center().rounded(7).when(on, (e) => e.bg(t.selected))
       .child(div().flex_1().min_w(0).truncate().child(row.label))
-      .when(Boolean(row.detail), (e) => e.child(div().flex_none().max_w(160).truncate().text_size(z(11)).text_color(t.dim).child(row.detail)));
+      .when(Boolean(row.detail), (e) => e.child(div().flex_none().max_w(160).truncate().text_size(hz(11)).text_color(t.dim).child(row.detail)));
   }
 
-  commitRow(c, t) {
-    return h_flex().h(z(28)).px(8).gap(6).items_center().rounded(7).when(c.id === this.selected?.id, (e) => e.bg(t.selected))
+  commitRow(c, t, hz) {
+    return h_flex().h(hz(28)).px(8).gap(6).items_center().rounded(7).when(c.id === this.selected?.id, (e) => e.bg(t.selected))
       .child(div().size(7).flex_none().rounded(4).bg(c.parents.length > 1 ? t.ansi5 : t.muted))
-      .child(div().w(z(56)).flex_none().text_size(z(12)).text_color(t.dim).child(c.id.slice(0, 7)))
+      .child(div().w(hz(56)).flex_none().text_size(hz(12)).text_color(t.dim).child(c.id.slice(0, 7)))
       .child(div().flex_1().min_w(0).truncate().child(c.subject))
-      .child(div().w(z(80)).flex_none().truncate().text_size(z(12)).text_color(t.muted).child(c.author))
-      .child(div().w(z(32)).flex_none().text_right().text_size(z(12)).text_color(t.dim).child(ago(c.date)));
+      .child(div().w(hz(80)).flex_none().truncate().text_size(hz(12)).text_color(t.muted).child(c.author))
+      .child(div().w(hz(32)).flex_none().text_right().text_size(hz(12)).text_color(t.dim).child(ago(c.date)));
   }
 
-  picker(t) {
+  picker(t, hz) {
     const rows = this.branchRows();
     return v_flex().flex_1().min_h(0)
       .on_key_down((e, cx) => { if (e.key === "escape") { this.picking = false; cx.stop_propagation(); cx.notify(); } })
       .child(h_flex().flex_none().px(10).py(5).border_b(1).border_color(t.border)
-        .child(div().id("branch-find").flex_1().min_w(0).h(z(24)).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent).cursor_text()
-          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.branchInput).h_full().text_size(z(11)).text_color(t.foreground))))
+        .child(div().id("branch-find").flex_1().min_w(0).h(hz(24)).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent).cursor_text()
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.branchInput).h_full().text_size(hz(11)).text_color(t.foreground))))
       .child(v_flex().flex_1().min_h(0).relative().p(6)
-        .child(v_virtual_list("git-branches", rows.length, rows.map((r) => r.group ? z(24) : z(28)), (i) => rows[i].key,
-          (range) => rows.slice(range.start, range.end).map((r) => this.branchRow(r, t))).size_full()
+        .child(v_virtual_list("git-branches", rows.length, rows.map((r) => r.group ? hz(24) : hz(28)), (i) => rows[i].key,
+          (range) => rows.slice(range.start, range.end).map((r) => this.branchRow(r, t, hz))).size_full()
           .on_item_click((key, cx) => { if (!key.startsWith("group:")) this.choose(key, cx); }))
         .child(Scrollbar.vertical("git-branches").viewport_from_layout().absolute().inset_0())
         .when(!rows.length, (e) => e.child(div().p(8).text_color(t.dim).child("No matching branches"))));
   }
 
-  history(t) {
+  history(t, hz) {
     const commits = this.commits, offList = this.selected && !commits.some((c) => c.id === this.selected.id);
     const empty = this.error ? null : !this.refs ? (this.loading ? "Loading…" : this.repo ? null : "No folder") : !this.tip ? "No commits yet" : null;
     return v_flex().flex_1().min_h(0)
-      .when(Boolean(this.moved), (e) => e.child(div().id("git-moved").flex_none().px(12).py(4).bg(t.raised).text_size(z(11)).text_color(t.muted).cursor_pointer()
+      .when(Boolean(this.moved), (e) => e.child(div().id("git-moved").flex_none().px(12).py(4).bg(t.raised).text_size(hz(11)).text_color(t.muted).cursor_pointer()
         .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.reload(cx)).child("Branch moved · Reload")))
-      .when(Boolean(offList), (e) => e.child(div().flex_none().px(12).py(4).text_size(z(11)).text_color(t.dim).child("The picked commit is not in the refreshed list")))
+      .when(Boolean(offList), (e) => e.child(div().flex_none().px(12).py(4).text_size(hz(11)).text_color(t.dim).child("The picked commit is not in the refreshed list")))
       .child(v_flex().flex_1().min_h(0).relative().p(6)
-        .child(v_virtual_list("git-commits", commits.length, z(28), (i) => commits[i].id,
-          (range) => commits.slice(range.start, range.end).map((c) => this.commitRow(c, t))).size_full()
+        .child(v_virtual_list("git-commits", commits.length, hz(28), (i) => commits[i].id,
+          (range) => commits.slice(range.start, range.end).map((c) => this.commitRow(c, t, hz))).size_full()
           .on_item_click((id, cx) => { const c = this.commits.find((c) => c.id === id); if (c) this.select(c, cx); }))
         .child(Scrollbar.vertical("git-commits").viewport_from_layout().absolute().inset_0())
         .when(Boolean(empty), (e) => e.child(div().p(8).text_color(t.dim).child(empty))))
-      .when(this.more, (e) => e.child(div().id("git-more").flex_none().px(12).py(5).border_t(1).border_color(t.border).text_size(z(11)).text_color(t.muted)
+      .when(Boolean(this.pageError), (e) => e.child(div().flex_none().px(12).py(4).text_size(hz(11)).text_color(t.ansi1).child(this.pageError)))
+      .when(this.more, (e) => e.child(div().id("git-more").flex_none().px(12).py(5).border_t(1).border_color(t.border).text_size(hz(11)).text_color(t.muted)
         .cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.loadMore(cx))
         .child(this.paging ? "Loading…" : `Load ${commits.length ? "more" : "commits"}`)));
   }
 
   render(cx) {
-    scale = panelScale();
+    z = scaler(panelSize("git"));
     const shown = visible();
     if (shown && (!this.shown || JSON.stringify(location()) !== this.requested)) this.refresh(cx);
     this.shown = shown;
-    const t = theme(), message = this.error ?? this.note;
+    const t = theme(), message = this.error ?? this.note, hz = scaler(partPx("git", "history"));
     return v_flex().id("git").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13))
       .child(h_flex().h(z(42)).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().flex_none().font_semibold().child("Git"))
@@ -287,6 +288,7 @@ export default class Git extends View {
         .child(this.button("git-refresh", "mods/my-git/refresh.svg", "Refresh", (cx) => { this.refresh(cx); cx.notify(); }, t, this.loading)))
       .when(Boolean(message), (e) => e.child(div().flex_none().px(12).py(4).border_b(1).border_color(t.border).text_size(z(11))
         .text_color(this.error ? t.ansi1 : t.dim).child(message)))
-      .child(this.picking ? this.picker(t) : this.history(t));
+      .child(sizedPart(v_flex().flex_1().min_h(0), this.picking ? this.picker(t, hz) : this.history(t, hz),
+        { ui: this.parts, panel: "git", part: "history", label: this.picking ? "Branches" : "Commits", t }));
   }
 }

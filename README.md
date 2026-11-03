@@ -37,6 +37,14 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   the shown panel's text size (shared `panel.text_size.<files|changes|issues|prs|git>`, 10–20 px at zoom 1, default
   13): each panel scales its text and rows from its own. Herdr's Settings screen can't take extra rows (`frame/` is
   rewritten on every start).
+- Part sizes (`part-math.js` in my-files, my-changes, my-git, my-github and my-tabs, `part-size.js` in the first four,
+  identical copies; tests: `node --no-warnings --test mods/my-changes/part-math.test.mjs`): each part of a panel (Files
+  list and preview; Changes list, diff and commit box; Git commits, changed files and diff; Issues and PRs list and
+  detail) shows a `− 13 +` pill while hovered, Ctrl+scroll over it resizes it, and clicking the number resets it. A
+  part stores an offset from its panel's size (`panel.text_offset.<panel>.<part>`, −12 to +14), clamped to 8–24 px at
+  zoom 1, so A−/A+ moves every part with the panel until a part reaches a limit. Below 96 px wide the pill drops its
+  number, below 52 px only Ctrl+scroll is left. Resizing a code preview reopens its editor at the top. Fenced code
+  blocks in Issues and PRs bodies and comments keep a fixed size: Herdr's Markdown view can't size them.
 - `layouts/my-main.json`: Herdr's `main` layout with its tab bar, agents list and Files and Changes panels pointed at
   `my-tabs`, `my-agents`, `my-files` and `my-changes`, Issues and PRs panels from `my-github`, a Git panel (`my-git`
   over `my-changes`, 3:5, resizable), a side panel sized by

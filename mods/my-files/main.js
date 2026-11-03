@@ -3,7 +3,8 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { languageOf, highlightLines, COLORS } from "./syntax.js";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, run, layout, shared, setShared, props } from "herdr";
+import { sizedPart, panelSize, partPx, scaler, codeMetrics } from "./part-size.js";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, window, run, layout, shared, setShared } from "herdr";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -23,18 +24,12 @@ const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
 const SIDES = { left: { direction: "flex_row", axis: "across" }, top: { direction: "flex_col", axis: "down" },
   right: { direction: "flex_row_reverse", axis: "across", far: true }, bottom: { direction: "flex_col_reverse", axis: "down", far: true } };
 
-// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1): text, the heights around it and text columns scale
-// from 13; icons, indents and truncation limits stay.
-let scale = 1;
-const z = (px) => px * scale;
-const panelScale = () => (Number(shared("panel.text_size.files")) || 13) / 13;
+// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1) sizes its header and find row; the list and the
+// preview add their own offsets (part-size.js). Text, the heights around it and text columns scale from 13; icons,
+// indents and truncation limits stay.
+let z = scaler(13);
 
-// Code text uses the terminal's font, at the block's `code_font_size` prop, else the terminal's size (px at zoom 1),
-// times the panel scale; row heights and character widths follow it, with ratios for a JetBrains Mono-like font.
-function codeMetrics() {
-  const s = settings(), size = (Number(props()?.code_font_size) || Number(s.font_size) || 14) * scale;
-  return { family: s.font_family ?? "JetBrains Mono", size, row: Math.round(size * 1.6), char: size * 0.62, numbers: Math.ceil(size * 0.62 * 4) };
-}
+const previewMetrics = () => codeMetrics(partPx("files", "preview"));
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -85,7 +80,7 @@ async function directory(path, on) {
 
 export default class Files extends View {
   init(_props, cx) {
-    this.saved = new Map(); this.side = localStorage.getItem("tree"); if (!Object.keys(SIDES).includes(this.side)) this.side = "left";
+    this.saved = new Map(); this.parts = {}; this.side = localStorage.getItem("tree"); if (!Object.keys(SIDES).includes(this.side)) this.side = "left";
     this.share = { across: Number(localStorage.getItem("tree:across")) || 0.375, down: Number(localStorage.getItem("tree:down")) || 0.375 };
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.query = ""; this.findHandle = cx.focus_handle(); this.findInput = InputState.new({ placeholder: "Find file in repo" });
@@ -191,21 +186,41 @@ export default class Files extends View {
         if (!current()) return;
         if (text === null) { this.fileError = "This file is no longer available"; return; }
         if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
-        const t = theme(), ext = path.includes(".") ? path.split(".").pop() : "txt", lang = languageOf(path);
+        const ext = path.includes(".") ? path.split(".").pop() : "txt", lang = languageOf(path);
         const value = text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text;
         if (LINES.has(lang)) {
           const lines = value.replace(/\n$/, "").split("\n");
           this.lines = { lines, runs: highlightLines(lang, lines), chars: lines.reduce((n, l) => Math.max(n, l.length), 0) };
           return;
         }
-        const mono = codeMetrics();
-        this.editorFont = { family: mono.family, size: mono.size };
-        this.code = EditorState.new({ language: EDITOR[lang] ?? LANG[ext] ?? ext, readonly: true,
-          value,
-          font_family: mono.family, font_size: mono.size,
-          syntax: Object.fromEntries(["keyword", "string", "comment", "function", "type", "number", "constant"].map(k => [k, t[COLORS[k]]])) });
+        this.openEditor(value, EDITOR[lang] ?? LANG[ext] ?? ext);
       } catch { if (current()) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
       finally { cx.notify(); }
+    });
+  }
+
+  // The editor takes its font when made; a font change makes it again from the loaded text (its scroll goes back to the top).
+  openEditor(value, language) {
+    const t = theme(), mono = previewMetrics();
+    const code = EditorState.new({ language, readonly: true, value, font_family: mono.family, font_size: mono.size,
+      syntax: Object.fromEntries(["keyword", "string", "comment", "function", "type", "number", "constant"].map(k => [k, t[COLORS[k]]])) });
+    this.code?.release();
+    this.code = code; this.editorFont = { family: mono.family, size: mono.size, language };
+  }
+
+  fontStale() {
+    const mono = previewMetrics(), font = this.editorFont;
+    return Boolean(this.code) && (font.family !== mono.family || font.size !== mono.size);
+  }
+
+  // A state can't be made during render, so the check that finds a stale font hands it to a timer; steps that land
+  // while it waits share its rebuild.
+  refont(cx) {
+    if (this.refonting || !this.fontStale()) return;
+    this.refonting = true;
+    cx.timer.after(150, cx => {
+      this.refonting = false;
+      if (this.fontStale()) { this.openEditor(this.code.value(), this.editorFont.language); cx.notify(); }
     });
   }
 
@@ -279,7 +294,7 @@ export default class Files extends View {
       .child(div().min_w(0).truncate().child(note));
   }
 
-  results(t, found) {
+  results(t, found, z) {
     const list = found.list;
     return v_flex().id("files-found").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(list.slice(0, FOUND).map(({ path, base }) => {
       const parts = path.split("/"), name = parts.pop();
@@ -292,8 +307,8 @@ export default class Files extends View {
   }
 
   // Read-only like the editor, without its selection; the same font and line numbers.
-  linesView(t) {
-    const { lines, runs, chars } = this.lines, mono = codeMetrics(), gutter = Math.ceil(String(lines.length).length * mono.char) + 20;
+  linesView(t, mono) {
+    const { lines, runs, chars } = this.lines, gutter = Math.ceil(String(lines.length).length * mono.char) + 20;
     const row = (i) => h_flex().h(mono.row).flex_none().w_full()
       .child(div().w(gutter).flex_none().pr(12).text_right().text_color(t.dim).child(String(i + 1)))
       .child(runs[i] ? h_flex().flex_1().min_w(0).children(runs[i].map(([text, category]) =>
@@ -333,7 +348,7 @@ export default class Files extends View {
     this.drag = false; cx.notify();
   }
 
-  rows(prefix, depth, out, t) {
+  rows(prefix, depth, out, t, z) {
     if (out.length >= TOTAL || depth > 40) return out;
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
@@ -344,25 +359,29 @@ export default class Files extends View {
         .child(svg(`mods/my-files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).truncate().child(entry.name))
         .when(Boolean(mark), el => el.child(div().text_size(z(11)).text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark))));
-      if (entry.dir && open) this.rows(path, depth + 1, out, t);
+      if (entry.dir && open) this.rows(path, depth + 1, out, t, z);
     }
     return out;
   }
 
-  tree(t) {
-    return v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
+  tree(t, z) {
+    return v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t, z))
       .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(z(12)).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
       .when(this.limited, el => el.child(div().p(8).text_size(z(11)).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")));
   }
 
   body(t, found) {
-    const list = found ? this.results(t, found) : this.tree(t);
+    const lz = scaler(partPx("files", "list")), part = (box, content, opts) => sizedPart(box, content, { ui: this.parts, panel: "files", t, hide: this.drag, ...opts });
+    const list = part(v_flex().flex_1().min_w(0).min_h(0), found ? this.results(t, found, lz) : this.tree(t, lz), { part: "list", label: found ? "Results" : "File list" });
     if (!this.file) return list;
     const { direction, axis } = SIDES[this.side], share = `${this.share[axis] * 100}%`;
     const tree = axis === "across" ? v_flex().flex_none().min_h(0).h_full().w(share) : v_flex().flex_none().min_h(0).w_full().h(share);
     const handle = axis === "across" ? div().w(5).h_full().cursor_col_resize().child(div().w(1).h_full().bg(t.border)).flex().justify_center()
       : div().h(5).w_full().cursor_row_resize().child(div().h(1).w_full().bg(t.border)).flex().flex_col().justify_center();
-    const preview = this.code ? Editor.new(this.code).flex_1().min_w(0).min_h(0) : this.lines ? this.linesView(t) : div().flex_1().p(12).text_color(t.dim).child(this.fileError || "Loading file…");
+    const mono = previewMetrics();
+    const view = this.code ? Editor.new(this.code).flex_1().min_w(0).min_h(0) : this.lines ? this.linesView(t, mono)
+      : div().flex_1().p(12).text_color(t.dim).child(this.fileError || "Loading file…");
+    const preview = part(v_flex().flex_1().min_w(0).min_h(0), view, { part: "preview", label: "Preview", code: this.code || this.lines ? mono.size : null });
     return div().id("files-body").flex().flex_1().min_h(0).relative()[direction]()
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
       .child(tree.child(list))
@@ -379,11 +398,9 @@ export default class Files extends View {
   }
 
   render(cx) {
-    scale = panelScale();
+    z = scaler(panelSize("files"));
     if (key() !== this.context?.key) this.refresh(cx);
-    // The editor takes its font when made: a terminal font change reopens the preview with the new one.
-    const mono = codeMetrics();
-    if (this.code && (this.editorFont.family !== mono.family || this.editorFont.size !== mono.size)) this.show(this.file, cx, this.fileBase);
+    this.refont(cx);
     const request = findRequest("files");
     if (request && request.id !== this.findId) {
       this.findId = request.id; this.openFind(cx);

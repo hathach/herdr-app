@@ -1,10 +1,10 @@
 // Modified from Herdr's shipped `tabs` mod (Apache-2.0): Issues, PRs and Git side panel buttons.
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
+import { BASE, baseKey, baseSize } from "./part-math.js";
 import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, focused, nextCommand } from "herdr";
 
-// Each side panel's text size, `panel.text_size.<panel>`, px at zoom 1; the panel mods scale from 13.
-const TEXT = { key: "panel.text_size", base: 13, min: 10, max: 20 };
+// Each side panel's text size, `panel.text_size.<panel>` (part-math.js), px at zoom 1; the panel mods scale from it.
 const PANELS = { files: ["Files", "mods/files/file.svg"], changes: ["Changes", "mods/changes/changes.svg"],
   issues: ["Issues", "mods/my-github/issues.svg"], prs: ["PRs", "mods/my-github/prs.svg"], git: ["Git", "mods/workspace-chrome/git-branch.svg"] };
 
@@ -115,12 +115,12 @@ export default class Tabs extends View {
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14)).child(label);
     };
-    const textKey = `${TEXT.key}.${body?.active}`, textSize = Number(shared(textKey)) || TEXT.base;
+    const textKey = baseKey(body?.active), textSize = baseSize(shared(textKey));
     const textStep = (id, label, by) => button(id, label, () => {
-      const next = Math.min(TEXT.max, Math.max(TEXT.min, textSize + by));
-      if (next !== textSize) setShared(textKey, next);
+      const now = baseSize(shared(textKey)), next = Math.min(BASE.max, Math.max(BASE.min, now + by));
+      if (next !== now) setShared(textKey, next);
     })
-      .w(22).text_size(12).tooltip(`${PANELS[body?.active]?.[0] ?? "Panel"} text ${textSize}px`);
+      .w(22).text_size(12).tooltip(`${PANELS[body?.active]?.[0] ?? "Panel"} text ${textSize}px · parts keep their own offsets`);
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })

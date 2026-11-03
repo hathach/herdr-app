@@ -3,6 +3,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, focused, exec, layout, theme, props, shared, setShared, run } from "herdr";
 import { parseRemotes, pickRepo, ghFailure, classifyRejection, parseChecks, BUCKETS, ago, since, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
+import { sizedPart, panelSize, partPx, scaler, PILL_SLOT } from "./part-size.js";
 
 const POLL = 60000, BACKOFF = 300000, LIMIT = 100, REPOS = "my-github.repos";
 const ISSUE = "number,title,state,author,labels,updatedAt,url", PR = `${ISSUE},isDraft,headRefName,baseRefName,reviewDecision`;
@@ -13,11 +14,10 @@ const KINDS = {
 };
 const REVIEW = { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "review required" };
 
-// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1; Issues and PRs each their own): text, the heights around it and text columns scale
-// from 13; icons, indents and truncation limits stay.
-let scale = 1;
-const z = (px) => px * scale;
-const panelScale = (kind) => (Number(shared(`panel.text_size.${kind}`)) || 13) / 13;
+// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1; Issues and PRs each their own) sizes its header,
+// filters, find row and repo errors; the list and the detail (with its comment box) add their own offsets
+// (part-size.js). Text, the heights around it and text columns scale from 13; icons, indents and truncation limits stay.
+let z = scaler(13);
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -56,7 +56,7 @@ const cap = (s) => s[0].toUpperCase() + s.slice(1);
 
 export default class GitHub extends View {
   init(_props, cx) {
-    this.kind = props()?.kind === "prs" ? "prs" : "issues";
+    this.kind = props()?.kind === "prs" ? "prs" : "issues"; this.parts = {};
     this.k = KINDS[this.kind];
     this.filterKey = `filter:${this.kind}`;
     const filter = localStorage.getItem(this.filterKey);
@@ -327,8 +327,8 @@ export default class GitHub extends View {
       .child(spinning ? svg("mods/my-github/spinner.svg").size(14).spin(900) : svg(icon).size(14));
   }
 
-  chip(id, label, on, onClick, t) {
-    return div().id(id).h(z(22)).px(8).flex().flex_none().items_center().rounded(6).cursor_pointer()
+  chip(id, label, on, onClick, t, sz = z) {
+    return div().id(id).h(sz(22)).px(8).flex().flex_none().items_center().rounded(6).cursor_pointer()
       .when(on, (e) => e.bg(t.selected).text_color(t.foreground)).hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => onClick(cx)).child(label);
   }
@@ -344,7 +344,7 @@ export default class GitHub extends View {
   }
 
   // One line, columns aligned across rows: dot, number, title, author, age; the rest is in the tooltip and detail.
-  row(it, t, numberWidth) {
+  row(it, t, numberWidth, z) {
     const author = it.author?.login ?? "ghost", age = ago(it.updatedAt), names = (it.labels ?? []).map((l) => l.name).join(", ");
     const tip = [`#${it.number} ${it.title}`, [author, since("updated", age), it.isDraft && "draft",
       REVIEW[it.reviewDecision], names && `labels ${names}`].filter(Boolean).join(" · ")].join("\n");
@@ -357,7 +357,7 @@ export default class GitHub extends View {
       .child(div().w(z(32)).flex_none().text_right().text_size(z(12)).text_color(t.dim).child(age));
   }
 
-  checksView(t) {
+  checksView(t, z) {
     if (this.checksError) return div().text_size(z(11)).text_color(t.ansi1).child(`Checks: ${this.checksError}`);
     if (!this.checks) return null;
     if (!this.checks.length) return div().text_size(z(11)).text_color(t.dim).child("No checks");
@@ -371,12 +371,13 @@ export default class GitHub extends View {
           .child(div().size(6).flex_none().rounded(3).bg(color[c.bucket])).child(div().min_w(0).truncate().child(c.workflow ? `${c.workflow} / ${c.name}` : c.name))));
   }
 
-  detailView(t) {
+  detailView(t, z) {
     const d = this.detail, it = d ?? this.items.find((i) => i.number === this.selected) ?? { number: this.selected };
-    const n = it.number, checks = this.kind === "prs" ? this.checksView(t) : null, opened = d && ago(d.createdAt);
+    const n = it.number, checks = this.kind === "prs" ? this.checksView(t, z) : null, opened = d && ago(d.createdAt);
     const meta = [it.author?.login, opened && since("opened", opened), REVIEW[it.reviewDecision]].filter(Boolean).join(" · ");
     return v_flex().id("detail").flex_1().min_h(0).overflow_y_scrollbar().p(12).gap(10)
-      .child(h_flex().gap(6).items_start()
+      // The part's size pill sits at the top right, beside these buttons.
+      .child(h_flex().gap(6).items_start().pr(PILL_SLOT - 12)
         .child(div().flex_1().min_w(0).font_semibold().child(it.title ? `${it.title} #${n}` : `#${n}`))
         .when(Boolean(it.url), (e) => e
           .child(this.button("copy-link", "mods/my-github/copy.svg", "Copy link", (cx) => cx.write_to_clipboard(it.url), t))
@@ -387,7 +388,7 @@ export default class GitHub extends View {
         .child(div().min_w(0).truncate().child(meta))
         .children(this.labels(it.labels, t))))
       .when(Boolean(it.headRefName), (e) => e.child(div().text_size(z(11)).text_color(t.muted).truncate().child(`${it.headRefName} → ${it.baseRefName}`)))
-      .when(Boolean(d), (e) => e.child(this.writes(d, t)))
+      .when(Boolean(d), (e) => e.child(this.writes(d, t, z)))
       .when(Boolean(checks), (e) => e.child(checks))
       .when(Boolean(this.detailError), (e) => e.child(div().text_size(z(11)).text_color(t.ansi1).child(this.detailError)))
       .when(this.detailLoading && !d, (e) => e.child(div().text_color(t.dim).child("Loading…")))
@@ -397,32 +398,32 @@ export default class GitHub extends View {
         .children(d.comments.map((c, i) => v_flex().gap(4).p(8).rounded(8).border_1().border_color(t.border)
           .child(div().text_size(z(11)).text_color(t.dim).child(`${c.author?.login ?? "ghost"} · ${ago(c.createdAt)}`))
           .child(TextView.markdown(`comment-${n}-${i}`, c.body || " ").selectable().w_full())))
-        .child(this.composer(t)));
+        .child(this.composer(t, z)));
   }
 
   // Close/Reopen behind a confirm naming the exact item, and the state of this item's writes.
-  writes(d, t) {
+  writes(d, t, z) {
     const key = this.itemKey(), label = `${this.where.repo}#${d.number}`, busy = this.posting.has(key), unknown = this.unknown.get(key);
     const action = d.state === "OPEN" ? "close" : d.state === "CLOSED" ? "reopen" : null;
     const confirm = this.confirm?.key === key ? this.confirm : null;
     return v_flex().gap(6).text_size(z(11))
       .child(h_flex().gap(4).items_center()
         .when(Boolean(action) && !confirm && !this.blocked(key), (e) => e.child(this.chip("state-action", `${cap(action)} ${this.k.noun}`, false,
-          (cx) => { this.confirm = { key, where: this.where, n: String(d.number), action, label }; cx.notify(); }, t).border_1().border_color(t.border)))
+          (cx) => { this.confirm = { key, where: this.where, n: String(d.number), action, label }; cx.notify(); }, t, z).border_1().border_color(t.border)))
         .when(busy, (e) => e.child(div().text_color(t.dim).child("Sending…"))))
       .when(Boolean(confirm), (e) => e.child(this.notice(t)
         .child(div().min_w(0).child(`${cap(confirm.action)} ${confirm.label}?`))
         .child(div().flex_1())
-        .child(this.chip("state-yes", cap(confirm.action), true, (cx) => this.setState(cx), t))
-        .child(this.chip("state-no", "Cancel", false, (cx) => { this.confirm = null; cx.notify(); }, t))))
+        .child(this.chip("state-yes", cap(confirm.action), true, (cx) => this.setState(cx), t, z))
+        .child(this.chip("state-no", "Cancel", false, (cx) => { this.confirm = null; cx.notify(); }, t, z))))
       .when(this.writeError?.key === key, (e) => e.child(div().text_color(t.ansi1).child(this.writeError.message)))
       .when(Boolean(unknown), (e) => e.child(this.notice(t)
         .child(div().min_w(0).flex_1().child(`${unknown.body ? "Comment" : cap(unknown.action)}: outcome unknown, check on GitHub before trying again`))
-        .child(this.chip("unknown-check", "Check again", false, (cx) => this.after(key, cx), t))
-        .child(this.chip("unknown-clear", "Clear", false, (cx) => { this.unknown.delete(key); cx.notify(); }, t))));
+        .child(this.chip("unknown-check", "Check again", false, (cx) => this.after(key, cx), t, z))
+        .child(this.chip("unknown-clear", "Clear", false, (cx) => { this.unknown.delete(key); cx.notify(); }, t, z))));
   }
 
-  composer(t) {
+  composer(t, z) {
     const key = this.itemKey(), label = `${this.where.repo}#${this.selected}`;
     const enabled = Boolean(this.drafts.get(key)?.trim()) && !this.blocked(key);
     return v_flex().gap(6).pt(4)
@@ -445,7 +446,7 @@ export default class GitHub extends View {
   }
 
   render(cx) {
-    scale = panelScale(this.kind);
+    z = scaler(panelSize(this.kind));
     const shown = this.visible();
     if (shown && (this.stamp() !== this.stamped || (!this.loading && this.due()))) this.refresh(cx);
     const request = findRequest(this.kind, shown);
@@ -455,7 +456,9 @@ export default class GitHub extends View {
     }
     const t = theme(), w = this.where, repo = w?.repo, note = this.message(t), items = this.shown();
     // From every loaded item, so filtering keeps the title column still; 0.65 em covers a 12px UI-font digit or "#".
-    const digits = this.items.reduce((n, it) => Math.max(n, String(it.number).length), 1), numberWidth = Math.ceil((digits + 1) * z(12) * 0.65);
+    const lz = scaler(partPx(this.kind, "list")), dz = scaler(partPx(this.kind, "detail"));
+    const part = (box, content, opts) => sizedPart(box, content, { ui: this.parts, panel: this.kind, t, hide: this.drag, ...opts });
+    const digits = this.items.reduce((n, it) => Math.max(n, String(it.number).length), 1), numberWidth = Math.ceil((digits + 1) * lz(12) * 0.65);
     const empty = this.loading ? "Loading…" : repo && !this.error ? `No ${this.filter === "all" ? "" : this.filter + " "}${this.k.title.toLowerCase()}` : "";
     return v_flex().id("github").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13))
       .child(h_flex().h(z(42)).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
@@ -478,15 +481,17 @@ export default class GitHub extends View {
       .when(Boolean(this.finding), (e) => e.child(this.findRow(t, this.query ? `${items.length} found` : "")))
       .when(Boolean(note), (e) => e.child(note))
       .child(v_flex().id("github-body").flex_1().min_h(0).relative().on_mouse_up("left", (_e, cx) => this.endDrag(cx))
-      .child(v_flex().id("items").when(Boolean(this.selected), (e) => e.h(`${this.listShare * 100}%`).flex_none()).when(!this.selected, (e) => e.flex_1()).min_h(0).overflow_y_scrollbar().p(6)
-        .children(items.map((it) => this.row(it, t, numberWidth)))
-        .when(!this.items.length && Boolean(empty), (e) => e.child(div().p(8).text_color(t.dim).child(empty)))
-        .when(this.items.length > 0 && !items.length, (e) => e.child(div().p(8).text_color(t.dim).child(exactNumber(this.query) ? `Not loaded: Enter opens #${exactNumber(this.query)}` : "No matching loaded items")))
-        .when(this.limited, (e) => e.child(div().p(8).text_size(z(11)).text_color(t.dim).child(`Showing the first ${LIMIT}: refine the search to see more`))))
+      .child(part(v_flex().when(Boolean(this.selected), (e) => e.h(`${this.listShare * 100}%`).flex_none()).when(!this.selected, (e) => e.flex_1()).min_h(0),
+        v_flex().id("items").size_full().overflow_y_scrollbar().p(6)
+          .children(items.map((it) => this.row(it, t, numberWidth, lz)))
+          .when(!this.items.length && Boolean(empty), (e) => e.child(div().p(8).text_color(t.dim).child(empty)))
+          .when(this.items.length > 0 && !items.length, (e) => e.child(div().p(8).text_color(t.dim).child(exactNumber(this.query) ? `Not loaded: Enter opens #${exactNumber(this.query)}` : "No matching loaded items")))
+          .when(this.limited, (e) => e.child(div().p(8).text_size(lz(11)).text_color(t.dim).child(`Showing the first ${LIMIT}: refine the search to see more`))),
+        { part: "list", label: this.k.title }))
       .when(Boolean(this.selected), (e) => e
         .child(div().id("github-divider").h(5).w_full().flex_none().flex().flex_col().justify_center().cursor_row_resize().child(div().h(1).w_full().bg(t.border))
           .on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
-        .child(this.detailView(t)))
+        .child(part(v_flex().flex_1().min_h(0), this.detailView(t, dz), { part: "detail", label: "Detail" })))
       // While dragging, a cover keeps the pointer's moves and release even over the detail's text and comment box.
       .when(Boolean(this.drag), (e) => e.child(div().id("github-drag").absolute().inset_0().cursor_row_resize()
         .on_mouse_move((ev, cx) => this.dragTo(ev, cx)).on_mouse_up("left", (_ev, cx) => this.endDrag(cx)).on_hover((inside, cx) => { if (!inside) this.endDrag(cx); }))));

@@ -3,9 +3,10 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { diffRows, splitRows, wholeSides, colourSides, paint, parseNumstat, parseNameStatus, CUT } from "./diff.js";
 import { languageOf, COLORS } from "./syntax.js";
+import { sizedPart, panelSize, partPx, scaler, codeMetrics, PILL_SLOT } from "./part-size.js";
 import { fileTree, treeRows } from "./tree.js";
 import { failure, commitBase, treeDiff } from "./commit.js";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run, layout, shared, setShared, props } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, run, layout, shared, setShared, props } from "herdr";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -66,18 +67,10 @@ function findPaths(list, query, path = (x) => x) {
     .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]).map((r) => r[3]);
 }
 
-// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1): text, the heights around it and text columns scale
-// from 13; icons, indents and truncation limits stay.
-let scale = 1;
-const z = (px) => px * scale;
-const panelScale = () => (Number(shared(`panel.text_size.${props()?.panel ?? "changes"}`)) || 13) / 13;
-
-// Code text uses the terminal's font, at the block's `code_font_size` prop, else the terminal's size (px at zoom 1),
-// times the panel scale; row heights and character widths follow it, with ratios for a JetBrains Mono-like font.
-function codeMetrics() {
-  const s = settings(), size = (Number(props()?.code_font_size) || Number(s.font_size) || 14) * scale;
-  return { family: s.font_family ?? "JetBrains Mono", size, row: Math.round(size * 1.6), char: size * 0.62, numbers: Math.ceil(size * 0.62 * 4) };
-}
+// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1) sizes its header, scope bar and find row; the
+// file list, the diff and the commit box add their own offsets (part-size.js). Text, the heights around it and text
+// columns scale from 13; icons, indents and truncation limits stay.
+let z = scaler(13);
 
 // A splitter's share lands on the nearest eighth when its drag ends, like the side panel's.
 const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
@@ -94,7 +87,7 @@ export default class Changes extends View {
     // In the Git panel it shows my-git's picked commit, read-only, as the side panel `panel`.
     this.source = props()?.source === "git"; this.panel = props()?.panel ?? "changes";
     const mode = this.source ? "git" : this.pinned ? "pane" : "panel";
-    this.roots = new Map();
+    this.roots = new Map(); this.parts = {};
     this.splitKey = `split:${mode}`; this.scopeKey = `scope:${mode}`;
     this.split = localStorage.getItem(this.splitKey) !== "false";
     this.scope = given?.scope ?? localStorage.getItem(this.scopeKey) ?? "work";
@@ -146,7 +139,7 @@ export default class Changes extends View {
       try {
         const r = await exec("git", ["fetch", "--quiet", "origin", branch], { cwd: root, on });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
-      } catch (e) { if (this.key() === context) this.note = `Fetch failed: ${e}`; }
+      } catch (e) { if (this.key() === context) this.note = { text: `Fetch failed: ${e}` }; }
       finally { this.fetching = false; this.again = true; this.refresh(cx); cx.notify(); }
     });
     cx.notify();
@@ -348,7 +341,7 @@ export default class Changes extends View {
     const context = this.context;
     if (this.open) cx.spawn(async (cx) => {
       try { await this.load(path, context, cx); }
-      catch (e) { if (this.key() === context && this.open === path) this.note = `Cannot preview this diff (too large or unreadable): ${e}`; }
+      catch (e) { if (this.key() === context && this.open === path) this.note = { text: `Cannot preview this diff (too large or unreadable): ${e}`, part: "diff" }; }
       cx.notify();
     });
     cx.notify();
@@ -373,13 +366,13 @@ export default class Changes extends View {
     return treeRows(this.tree, this.collapsedHere());
   }
 
-  treeRow(id, depth, t) {
+  treeRow(id, depth, t, z) {
     return h_flex().id(id).h(z(28)).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover((s) => s.bg(t.hover));
   }
 
-  fileRow(f, depth, t) {
+  fileRow(f, depth, t, z) {
     const parts = f.path.split("/"), name = parts.pop(), folder = this.query && parts.length ? parts.join("/") + "/" : "";
-    return this.treeRow(`change-file-${f.path}`, depth, t).when(this.open === f.path, (e) => e.bg(t.selected)).on_click((_e, cx) => this.pick(f.path, cx))
+    return this.treeRow(`change-file-${f.path}`, depth, t, z).when(this.open === f.path, (e) => e.bg(t.selected)).on_click((_e, cx) => this.pick(f.path, cx))
       .child(div().w(12).flex_none())
       .child(svg("mods/my-changes/file.svg").size(14).flex_none().text_color(t.muted))
       .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(folder)).child(div().max_w(260).min_w(0).truncate().child(name)))
@@ -387,9 +380,9 @@ export default class Changes extends View {
       .child(div().w(z(10)).flex_none().text_size(z(11)).text_color(f.status === "A" ? t.ansi2 : f.status === "D" || f.status === "U" ? t.ansi1 : t.blocked).child(f.status));
   }
 
-  folderRow(row, t) {
+  folderRow(row, t, z) {
     const open = !this.collapsedHere().has(row.dir);
-    return this.treeRow(`change-dir-${row.dir}`, row.depth, t).on_click((_e, cx) => this.toggleFolder(row.dir, cx))
+    return this.treeRow(`change-dir-${row.dir}`, row.depth, t, z).on_click((_e, cx) => this.toggleFolder(row.dir, cx))
       .child(svg(`mods/my-changes/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
       .child(svg("mods/my-changes/folder.svg").size(14).flex_none().text_color(t.muted))
       .child(div().flex_1().min_w(0).truncate().child(row.name));
@@ -434,34 +427,34 @@ export default class Changes extends View {
           if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
         }
         if (this.key() === context) { this.message = ""; this.input.set_value(""); }
-      } catch (e) { if (this.key() === context) this.note = `Commit failed: ${e}`; }
+      } catch (e) { if (this.key() === context) this.note = { text: `Commit failed: ${e}`, part: "commit" }; }
       finally { this.busy = false; this.refresh(cx); cx.notify(); }
     });
     cx.notify();
   }
 
   // An absent line (the empty side of a split row) is shaded.
-  lineCell(line, number, t, runs) {
+  lineCell(line, number, t, runs, mono) {
     const [band, numbers] = this.changed[line?.tint ?? line?.kind] ?? [line ? null : t.raised + "60", t.dim];
     return h_flex().gap(10).when(Boolean(band), (e) => e.bg(band))
-      .child(div().w(this.mono.numbers).flex_none().text_right().text_color(numbers).child(number === undefined ? "" : String(number)))
+      .child(div().w(mono.numbers).flex_none().text_right().text_color(numbers).child(number === undefined ? "" : String(number)))
       .child(runs ? h_flex().flex_1().min_w(0).overflow_hidden().children(runs.map(([text, category]) =>
         div().flex_none().whitespace_nowrap().when(Boolean(COLORS[category]), (e) => e.text_color(t[COLORS[category]])).child(text)))
         : div().flex_1().min_w(0).truncate().child(line?.text ?? ""));
   }
 
-  diffRow(row, t) {
-    if (row.kind === "@") return div().w_full().px(12).h(this.mono.row).flex_none().truncate().bg(t.raised).text_color(t.dim).child(row.text);
+  diffRow(row, t, mono) {
+    if (row.kind === "@") return div().w_full().px(12).h(mono.row).flex_none().truncate().bg(t.raised).text_color(t.dim).child(row.text);
     const old = row.kind === "-";
-    return this.lineCell(row, old ? row.old : row.new, t, old ? row.oldRuns : row.newRuns).w_full().h(this.mono.row).flex_none();
+    return this.lineCell(row, old ? row.old : row.new, t, old ? row.oldRuns : row.newRuns, mono).w_full().h(mono.row).flex_none();
   }
 
-  splitRow(pair, t) {
-    if (!("left" in pair)) return this.diffRow(pair, t);
-    return h_flex().w_full().h(this.mono.row).flex_none()
-      .child(this.lineCell(pair.left, pair.left?.old, t, pair.left?.oldRuns).flex_1().min_w(0).h_full())
+  splitRow(pair, t, mono) {
+    if (!("left" in pair)) return this.diffRow(pair, t, mono);
+    return h_flex().w_full().h(mono.row).flex_none()
+      .child(this.lineCell(pair.left, pair.left?.old, t, pair.left?.oldRuns, mono).flex_1().min_w(0).h_full())
       .child(div().w(1).h_full().flex_none().bg(t.border))
-      .child(this.lineCell(pair.right, pair.right?.new, t, pair.right?.newRuns).flex_1().min_w(0).h_full());
+      .child(this.lineCell(pair.right, pair.right?.new, t, pair.right?.newRuns, mono).flex_1().min_w(0).h_full());
   }
 
   startDrag(cx) {
@@ -515,7 +508,7 @@ export default class Changes extends View {
   }
 
   render(cx) {
-    scale = panelScale();
+    z = scaler(panelSize(this.panel));
     if (this.key() !== this.context) this.refresh(cx);
     // A row belongs to the place it opened for; a scope switch keeps it.
     if (this.finding && this.findPlace !== this.placeKey()) this.closeFind();
@@ -525,13 +518,17 @@ export default class Changes extends View {
       setShared("panel.find", null);
     }
     const shown = this.shown(), rows = this.listRows();
-    this.mono = codeMetrics();
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
+    const diffPx = partPx(this.panel, "diff"), mono = codeMetrics(diffPx), dz = scaler(diffPx), lz = scaler(partPx(this.panel, "list")), cz = scaler(partPx(this.panel, "commit"));
+    const part = (box, content, opts) => sizedPart(box, content, { ui: this.parts, panel: this.panel, t, hide: this.drag, ...opts });
+    // A note shows in the part it is about; one about the whole panel (a failed fetch) at the panel's size.
+    const noted = (owner) => Boolean(this.note) && (this.note.part ?? null) === owner;
+    const note = (size) => div().px(10).pb(8).text_size(size).text_color(t.ansi1).child(this.note.text);
     this.changed = CHANGED[darkColour(t.background) ? "dark" : "light"];
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     const nothing = this.source ? (this.picked ? "No changes in this commit" : "No commit picked") : this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
-    const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t)] : [this.rows, (r, t) => this.diffRow(r, t)];
-    const list = v_virtual_list("changes-diff", items.length, this.mono.row, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full();
+    const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t, mono)] : [this.rows, (r, t) => this.diffRow(r, t, mono)];
+    const list = v_virtual_list("changes-diff", items.length, mono.row, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full();
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13)).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.findFocused) { this.closeFind(true); cx.stop_propagation(); cx.notify(); return; }
@@ -547,23 +544,31 @@ export default class Changes extends View {
       .when(Boolean(this.finding), (e) => e.child(this.findRow(t, this.query ? `${shown.length} found` : "")))
       .child(v_flex().id("changes-body").flex_1().min_h(0).relative()
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
-      .child(v_flex().id("changes-list").flex_none().h(this.listShare ? `${this.listShare * 100}%` : Math.min(z(200), Math.max(44, rows.length * z(28) + 12))).overflow_y_scrollbar().p(6)
-        .children(rows.map((row) => row.file ? this.fileRow(row.file, row.depth, t) : this.folderRow(row, t)))
-        .when(!shown.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : !this.root ? "No folder" : this.files.length ? "No matching changed files" : nothing)))))
+      .child(part(v_flex().flex_none().h(this.listShare ? `${this.listShare * 100}%` : Math.min(lz(200), Math.max(44, rows.length * lz(28) + 12))),
+        v_flex().id("changes-list").size_full().overflow_y_scrollbar().p(6)
+          .children(rows.map((row) => row.file ? this.fileRow(row.file, row.depth, t, lz) : this.folderRow(row, t, lz)))
+          .when(!shown.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : !this.root ? "No folder" : this.files.length ? "No matching changed files" : nothing))))
+          .when(this.limited, el => el.child(div().px(6).py(4).text_size(lz(11)).text_color(t.dim).child("Showing the first 1,000 changed files"))),
+        { part: "list", label: this.query ? "Matches" : "Changed files" }))
       .child(div().id("changes-divider").h(5).w_full().flex_none().flex().flex_col().justify_center().cursor_row_resize().child(div().h(1).w_full().bg(t.border))
         .on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
-      .when(this.limited, el => el.child(div().px(12).py(4).text_size(z(11)).text_color(t.dim).child("Showing the first 1,000 changed files")))
-      .child(div().flex_1().min_h(0).relative().font_family(this.mono.family).text_size(this.mono.size)
-        // In a horizontal scroller the list keeps its last measured width, leaving the side-by-side divider off centre.
-        .child(this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, this.diffChars * this.mono.char + this.mono.numbers + 30)).h_full().child(list)))
-        .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
-        .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child("Select a file to view its changes"))))
+      .child(part(v_flex().flex_1().min_h(0), v_flex().flex_1().min_h(0)
+        .child(div().flex_1().min_h(0).relative().font_family(mono.family).text_size(mono.size)
+          // In a horizontal scroller the list keeps its last measured width, leaving the side-by-side divider off centre.
+          .child(this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, this.diffChars * mono.char + mono.numbers + 30)).h_full().child(list)))
+          .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
+          .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child("Select a file to view its changes"))))
+        .when(noted("diff"), (e) => e.child(note(dz(11)).pt(6))),
+        { part: "diff", label: "Diff", code: mono.size }))
       // While dragging, a cover keeps the pointer's moves and release even over the diff.
       .when(Boolean(this.drag), (e) => e.child(div().id("changes-drag").absolute().inset_0().cursor_row_resize()
         .on_mouse_move((ev, cx) => this.dragTo(ev, cx)).on_mouse_up("left", (_ev, cx) => this.endDrag(cx)).on_hover((inside, cx) => { if (!inside) this.endDrag(cx); }))))
-      .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(z(11)).text_color(t.ansi1).child(this.note)))
-      .when(!this.source, (e) => e.child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
-        .child(div().id("commit-message").flex_1().min_w(0).h(z(32)).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(z(12)).text_color(t.foreground)))
-        .child(div().id("commit").h(z(32)).px(14).flex().items_center().rounded(8).bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).text_size(z(12)).when(enabled, (e) => e.cursor_pointer()).on_click((_e, cx) => this.commit(cx)).child(this.busy ? "Committing…" : "Commit"))));
+      .when(noted(null), (e) => e.child(note(z(11)).pt(6)))
+      .when(!this.source, (e) => e.child(part(v_flex().flex_none().border_t(1).border_color(t.border), v_flex()
+        .when(noted("commit"), (e) => e.child(note(cz(11)).pt(8).pr(PILL_SLOT)))
+        .child(h_flex().p(10).pr(PILL_SLOT).gap(8)
+          .child(div().id("commit-message").flex_1().min_w(0).h(cz(32)).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(cz(12)).text_color(t.foreground)))
+          .child(div().id("commit").h(cz(32)).px(14).flex().items_center().rounded(8).bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).text_size(cz(12)).when(enabled, (e) => e.cursor_pointer()).on_click((_e, cx) => this.commit(cx)).child(this.busy ? "Committing…" : "Commit"))),
+        { part: "commit", label: "Commit box" })));
   }
 }
