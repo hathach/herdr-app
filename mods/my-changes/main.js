@@ -3,6 +3,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { diffRows, splitRows, wholeSides, colourSides, paint, CUT } from "./diff.js";
 import { languageOf, COLORS } from "./syntax.js";
+import { fileTree, treeRows } from "./tree.js";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run, layout, shared, setShared, props } from "herdr";
 
 function location() {
@@ -58,15 +59,26 @@ function findPaths(list, query, path = (x) => x) {
     .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]).map((r) => r[3]);
 }
 
-// Code text uses the terminal's font, at the block's `code_font_size` prop, else the terminal's size (px at zoom 1);
-// row heights and character widths follow it, with ratios for a JetBrains Mono-like font.
+// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1): text, the heights around it and text columns scale
+// from 13; icons, indents and truncation limits stay.
+let scale = 1;
+const z = (px) => px * scale;
+const panelScale = () => (Number(shared("panel.text_size.changes")) || 13) / 13;
+
+// Code text uses the terminal's font, at the block's `code_font_size` prop, else the terminal's size (px at zoom 1),
+// times the panel scale; row heights and character widths follow it, with ratios for a JetBrains Mono-like font.
 function codeMetrics() {
-  const s = settings(), size = Number(props()?.code_font_size) || Number(s.font_size) || 14;
+  const s = settings(), size = (Number(props()?.code_font_size) || Number(s.font_size) || 14) * scale;
   return { family: s.font_family ?? "JetBrains Mono", size, row: Math.round(size * 1.6), char: size * 0.62, numbers: Math.ceil(size * 0.62 * 4) };
 }
 
 // A splitter's share lands on the nearest eighth when its drag ends, like the side panel's.
 const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
+
+// Changed-line [background, line number] colours: opaque and saturated, as Claude Code's diff draws them; the set
+// follows the drawn theme's background, whatever the appearance setting says.
+const CHANGED = { dark: { "-": ["#3d0100", "#dc5a5a"], "+": ["#022800", "#50c850"] }, light: { "-": ["#ffd7d5", "#b42318"], "+": ["#d3f5d1", "#1a7f37"] } };
+const darkColour = (hex) => { const n = parseInt(hex.slice(1, 7), 16); return (n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114 < 128000; };
 
 export default class Changes extends View {
   init(given, cx) {
@@ -88,6 +100,7 @@ export default class Changes extends View {
     this.input.on("submit", (_e, cx) => this.commit(cx));
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
+    this.collapsed = new Map();
     this.query = ""; this.findInput = InputState.new({ placeholder: "Find changed file" });
     this.findInput.on("change", (_e, cx) => { this.query = this.findInput.value().trim(); cx.notify(); });
     this.findInput.on("submit", (_e, cx) => { const first = this.shown()[0]; if (first && this.open !== first.path) this.pick(first.path, cx); });
@@ -277,6 +290,9 @@ export default class Changes extends View {
 
   pick(path, cx) {
     this.open = this.open === path ? null : path; this.setLines([]); this.note = null;
+    // Picked from find results: its folders open, so it shows in the tree once find closes.
+    const collapsed = this.collapsedHere();
+    for (let at = path.indexOf("/"); at >= 0; at = path.indexOf("/", at + 1)) collapsed.delete(path.slice(0, at));
     this.closed = !this.open;
     const context = this.context;
     if (this.open) cx.spawn(async (cx) => {
@@ -285,6 +301,47 @@ export default class Changes extends View {
       cx.notify();
     });
     cx.notify();
+  }
+
+  // Folders closed in this place and scope; all open at first.
+  collapsedHere() {
+    if (!this.collapsed.has(this.context)) this.collapsed.set(this.context, new Set());
+    return this.collapsed.get(this.context);
+  }
+
+  toggleFolder(path, cx) {
+    const collapsed = this.collapsedHere();
+    if (!collapsed.delete(path)) collapsed.add(path);
+    cx.notify();
+  }
+
+  // The list's rows: the folder tree, or while finding, the ranked matches with their folders.
+  listRows() {
+    if (this.query) return this.shown().map((file) => ({ file, depth: 0 }));
+    if (this.treeOf !== this.files) { this.treeOf = this.files; this.tree = fileTree(this.files); }
+    return treeRows(this.tree, this.collapsedHere());
+  }
+
+  treeRow(id, depth, t) {
+    return h_flex().id(id).h(z(28)).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover((s) => s.bg(t.hover));
+  }
+
+  fileRow(f, depth, t) {
+    const parts = f.path.split("/"), name = parts.pop(), folder = this.query && parts.length ? parts.join("/") + "/" : "";
+    return this.treeRow(`change-file-${f.path}`, depth, t).when(this.open === f.path, (e) => e.bg(t.selected)).on_click((_e, cx) => this.pick(f.path, cx))
+      .child(div().w(12).flex_none())
+      .child(svg("mods/my-changes/file.svg").size(14).flex_none().text_color(t.muted))
+      .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(folder)).child(div().max_w(260).min_w(0).truncate().child(name)))
+      .when(f.add > 0, (e) => e.child(div().text_size(z(11)).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(z(11)).text_color(t.ansi1).child(`−${f.del}`)))
+      .child(div().w(z(10)).flex_none().text_size(z(11)).text_color(f.status === "A" ? t.ansi2 : f.status === "D" || f.status === "U" ? t.ansi1 : t.blocked).child(f.status));
+  }
+
+  folderRow(row, t) {
+    const open = !this.collapsedHere().has(row.dir);
+    return this.treeRow(`change-dir-${row.dir}`, row.depth, t).on_click((_e, cx) => this.toggleFolder(row.dir, cx))
+      .child(svg(`mods/my-changes/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
+      .child(svg("mods/my-changes/folder.svg").size(14).flex_none().text_color(t.muted))
+      .child(div().flex_1().min_w(0).truncate().child(row.name));
   }
 
   shown() {
@@ -308,9 +365,9 @@ export default class Changes extends View {
   }
 
   findRow(t, count) {
-    return h_flex().id("find").flex_none().px(10).py(5).gap(6).items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.dim)
-      .child(div().id("find-box").flex_1().min_w(0).h(24).px(8).flex().items_center().rounded(6).border_1().border_color(this.findFocused ? t.accent : t.border).cursor_text()
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.findInput).h_full().text_size(11).text_color(t.foreground)))
+    return h_flex().id("find").flex_none().px(10).py(5).gap(6).items_center().border_b(1).border_color(t.border).text_size(z(11)).text_color(t.dim)
+      .child(div().id("find-box").flex_1().min_w(0).h(z(24)).px(8).flex().items_center().rounded(6).border_1().border_color(this.findFocused ? t.accent : t.border).cursor_text()
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.findInput).h_full().text_size(z(11)).text_color(t.foreground)))
       .child(div().flex_none().child(count))
       .child(this.headerButton("find-close", "mods/my-changes/x.svg", false, "Close find (Esc)", (cx) => { this.closeFind(); cx.notify(); }, t));
   }
@@ -334,9 +391,9 @@ export default class Changes extends View {
 
   // An absent line (the empty side of a split row) is shaded.
   lineCell(line, number, t, runs) {
-    const tint = line?.kind === "+" ? t.ansi2 + "18" : line?.kind === "-" ? t.ansi1 + "18" : line ? null : t.raised + "60";
-    return h_flex().gap(10).when(Boolean(tint), (e) => e.bg(tint))
-      .child(div().w(this.mono.numbers).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
+    const [band, numbers] = this.changed[line?.tint ?? line?.kind] ?? [line ? null : t.raised + "60", t.dim];
+    return h_flex().gap(10).when(Boolean(band), (e) => e.bg(band))
+      .child(div().w(this.mono.numbers).flex_none().text_right().text_color(numbers).child(number === undefined ? "" : String(number)))
       .child(runs ? h_flex().flex_1().min_w(0).overflow_hidden().children(runs.map(([text, category]) =>
         div().flex_none().whitespace_nowrap().when(Boolean(COLORS[category]), (e) => e.text_color(t[COLORS[category]])).child(text)))
         : div().flex_1().min_w(0).truncate().child(line?.text ?? ""));
@@ -383,10 +440,10 @@ export default class Changes extends View {
   }
 
   scopeBar(t) {
-    const chip = (scope, label) => div().id(`scope-${scope}`).h(22).px(8).flex().items_center().rounded(6).cursor_pointer()
+    const chip = (scope, label) => div().id(`scope-${scope}`).h(z(22)).px(8).flex().items_center().rounded(6).cursor_pointer()
       .when(this.scope === scope, (e) => e.bg(t.selected).text_color(t.foreground)).hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.setScope(scope, cx)).child(label);
-    return h_flex().h(34).flex_none().px(10).gap(4).items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.muted)
+    return h_flex().h(z(34)).flex_none().px(10).gap(4).items_center().border_b(1).border_color(t.border).text_size(z(11)).text_color(t.muted)
       .child(chip("work", "Uncommitted")).child(chip("branch", "Branch"))
       .child(div().flex_1())
       .when(this.scope === "branch" && Boolean(this.base), (e) => e
@@ -395,6 +452,7 @@ export default class Changes extends View {
   }
 
   render(cx) {
+    scale = panelScale();
     if (this.key() !== this.context) this.refresh(cx);
     // A row belongs to the place it opened for; a scope switch keeps it.
     if (this.finding && this.findPlace !== this.placeKey()) this.closeFind();
@@ -403,38 +461,35 @@ export default class Changes extends View {
       this.findId = request.id; this.openFind(cx);
       setShared("panel.find", null);
     }
-    const shown = this.shown();
+    const shown = this.shown(), rows = this.listRows();
     this.mono = codeMetrics();
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
+    this.changed = CHANGED[darkColour(t.background) ? "dark" : "light"];
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     const nothing = this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
     const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t)] : [this.rows, (r, t) => this.diffRow(r, t)];
     const list = v_virtual_list("changes-diff", items.length, this.mono.row, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full();
-    return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
+    return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13)).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.findFocused) { this.closeFind(true); cx.stop_propagation(); cx.notify(); return; }
         if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
       })
-      .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
+      .child(h_flex().h(z(42)).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Changes"))
-        .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(this.query ? `${shown.length} of ${this.files.length} files` : `${this.files.length} files`))
-        .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`))
+        .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(z(10)).text_color(t.muted).child(this.query ? `${shown.length} of ${this.files.length} files` : `${this.files.length} files`))
+        .child(div().flex_1()).child(div().text_size(z(11)).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(z(11)).text_color(t.ansi1).child(`−${del}`))
         .child(this.headerButton("changes-split", "mods/my-changes/columns.svg", this.split, this.split ? "Unified view" : "Side-by-side view", (cx) => this.toggleSplit(cx), t))
         .when(!this.pinned, (e) => e.child(this.headerButton("changes-pane", "mods/my-changes/open-pane.svg", false, "Open in a pane", () => this.openPane(), t))))
       .child(this.scopeBar(t))
       .when(Boolean(this.finding), (e) => e.child(this.findRow(t, this.query ? `${shown.length} found` : "")))
       .child(v_flex().id("changes-body").flex_1().min_h(0).relative()
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
-      .child(v_flex().id("changes-list").flex_none().h(this.listShare ? `${this.listShare * 100}%` : Math.min(200, Math.max(44, this.files.length * 28 + 12))).overflow_y_scrollbar().p(6).children(shown.map((f) => {
-        const parts = f.path.split("/"), name = parts.pop();
-        return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
-          .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
-          .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
-          .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
-      })).when(!shown.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : !this.root ? "No folder" : this.files.length ? "No matching changed files" : nothing)))))
+      .child(v_flex().id("changes-list").flex_none().h(this.listShare ? `${this.listShare * 100}%` : Math.min(z(200), Math.max(44, rows.length * z(28) + 12))).overflow_y_scrollbar().p(6)
+        .children(rows.map((row) => row.file ? this.fileRow(row.file, row.depth, t) : this.folderRow(row, t)))
+        .when(!shown.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : !this.root ? "No folder" : this.files.length ? "No matching changed files" : nothing)))))
       .child(div().id("changes-divider").h(5).w_full().flex_none().flex().flex_col().justify_center().cursor_row_resize().child(div().h(1).w_full().bg(t.border))
         .on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
-      .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
+      .when(this.limited, el => el.child(div().px(12).py(4).text_size(z(11)).text_color(t.dim).child("Showing the first 1,000 changed files")))
       .child(div().flex_1().min_h(0).relative().font_family(this.mono.family).text_size(this.mono.size)
         // In a horizontal scroller the list keeps its last measured width, leaving the side-by-side divider off centre.
         .child(this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, this.diffChars * this.mono.char + this.mono.numbers + 30)).h_full().child(list)))
@@ -443,9 +498,9 @@ export default class Changes extends View {
       // While dragging, a cover keeps the pointer's moves and release even over the diff.
       .when(Boolean(this.drag), (e) => e.child(div().id("changes-drag").absolute().inset_0().cursor_row_resize()
         .on_mouse_move((ev, cx) => this.dragTo(ev, cx)).on_mouse_up("left", (_ev, cx) => this.endDrag(cx)).on_hover((inside, cx) => { if (!inside) this.endDrag(cx); }))))
-      .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))
+      .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(z(11)).text_color(t.ansi1).child(this.note)))
       .child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
-        .child(div().id("commit-message").flex_1().min_w(0).h(32).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))
-        .child(div().id("commit").h(32).px(14).flex().items_center().rounded(8).bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).text_size(12).when(enabled, (e) => e.cursor_pointer()).on_click((_e, cx) => this.commit(cx)).child(this.busy ? "Committing…" : "Commit")));
+        .child(div().id("commit-message").flex_1().min_w(0).h(z(32)).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(z(12)).text_color(t.foreground)))
+        .child(div().id("commit").h(z(32)).px(14).flex().items_center().rounded(8).bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).text_size(z(12)).when(enabled, (e) => e.cursor_pointer()).on_click((_e, cx) => this.commit(cx)).child(this.busy ? "Committing…" : "Commit")));
   }
 }

@@ -148,7 +148,7 @@
                       "content": {
                         "mod": "my-files",
                         "props": {
-                          "code_font_size": 12
+                          "code_font_size": 13
                         }
                       }
                     },
@@ -158,7 +158,7 @@
                       "content": {
                         "mod": "my-changes",
                         "props": {
-                          "code_font_size": 12
+                          "code_font_size": 13
                         }
                       }
                     },

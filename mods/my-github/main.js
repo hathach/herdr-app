@@ -2,7 +2,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, focused, exec, layout, theme, props, shared, setShared, run } from "herdr";
-import { parseRemotes, pickRepo, ghFailure, classifyRejection, parseChecks, BUCKETS, ago, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
+import { parseRemotes, pickRepo, ghFailure, classifyRejection, parseChecks, BUCKETS, ago, since, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
 
 const POLL = 60000, BACKOFF = 300000, LIMIT = 100, REPOS = "my-github.repos";
 const ISSUE = "number,title,state,author,labels,updatedAt,url", PR = `${ISSUE},isDraft,headRefName,baseRefName,reviewDecision`;
@@ -12,6 +12,12 @@ const KINDS = {
   prs: { cmd: "pr", title: "Pull requests", noun: "pull request", path: "pulls", filters: ["open", "closed", "merged", "all"], list: PR, view: PR + VIEW },
 };
 const REVIEW = { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "review required" };
+
+// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1; Issues and PRs each their own): text, the heights around it and text columns scale
+// from 13; icons, indents and truncation limits stay.
+let scale = 1;
+const z = (px) => px * scale;
+const panelScale = (kind) => (Number(shared(`panel.text_size.${kind}`)) || 13) / 13;
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -277,10 +283,10 @@ export default class GitHub extends View {
   }
 
   findRow(t, count) {
-    return h_flex().id("find").flex_none().px(10).py(5).gap(6).items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.dim)
+    return h_flex().id("find").flex_none().px(10).py(5).gap(6).items_center().border_b(1).border_color(t.border).text_size(z(11)).text_color(t.dim)
       .track_focus(this.findHandle).on_key_down((e, cx) => { if (e.key === "escape") { this.closeFind(true); cx.stop_propagation(); cx.notify(); } })
-      .child(div().id("find-box").flex_1().min_w(0).h(24).px(8).flex().items_center().rounded(6).border_1().border_color(this.findFocused ? t.accent : t.border).cursor_text()
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.findInput).h_full().text_size(11).text_color(t.foreground)))
+      .child(div().id("find-box").flex_1().min_w(0).h(z(24)).px(8).flex().items_center().rounded(6).border_1().border_color(this.findFocused ? t.accent : t.border).cursor_text()
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.findInput).h_full().text_size(z(11)).text_color(t.foreground)))
       .child(div().flex_none().child(count))
       .child(this.button("find-close", "mods/my-github/x.svg", "Close find (Esc)", (cx) => { this.closeFind(); cx.notify(); }, t));
   }
@@ -322,7 +328,7 @@ export default class GitHub extends View {
   }
 
   chip(id, label, on, onClick, t) {
-    return div().id(id).h(22).px(8).flex().flex_none().items_center().rounded(6).cursor_pointer()
+    return div().id(id).h(z(22)).px(8).flex().flex_none().items_center().rounded(6).cursor_pointer()
       .when(on, (e) => e.bg(t.selected).text_color(t.foreground)).hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => onClick(cx)).child(label);
   }
@@ -337,24 +343,27 @@ export default class GitHub extends View {
     return (list ?? []).slice(0, 3).map((l) => div().px(5).rounded(8).border_1().border_color(`#${l.color}`).text_color(t.muted).max_w(120).truncate().child(l.name));
   }
 
-  row(it, t) {
-    const meta = [it.author?.login, ago(it.updatedAt), it.isDraft && "draft", REVIEW[it.reviewDecision]].filter(Boolean).join(" · ");
-    return v_flex().id(`item-${it.number}`).flex_none().px(8).py(5).gap(2).rounded(7).cursor_pointer()
+  // One line, columns aligned across rows: dot, number, title, author, age; the rest is in the tooltip and detail.
+  row(it, t, numberWidth) {
+    const author = it.author?.login ?? "ghost", age = ago(it.updatedAt), names = (it.labels ?? []).map((l) => l.name).join(", ");
+    const tip = [`#${it.number} ${it.title}`, [author, since("updated", age), it.isDraft && "draft",
+      REVIEW[it.reviewDecision], names && `labels ${names}`].filter(Boolean).join(" · ")].join("\n");
+    return h_flex().id(`item-${it.number}`).flex_none().h(z(28)).px(8).gap(6).items_center().rounded(7).cursor_pointer().tooltip(tip)
       .when(this.selected === it.number, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.select(it.number, cx))
-      .child(h_flex().gap(6).min_w(0).items_center()
-        .child(div().size(7).flex_none().rounded(4).bg(this.stateColor(it, t)))
-        .child(div().flex_none().text_color(t.dim).child(`#${it.number}`))
-        .child(div().flex_1().min_w(0).truncate().child(it.title)))
-      .child(h_flex().pl(13).gap(6).min_w(0).overflow_hidden().text_size(11).text_color(t.dim).child(div().min_w(0).truncate().child(meta)).children(this.labels(it.labels, t)));
+      .child(div().size(7).flex_none().rounded(4).bg(this.stateColor(it, t)))
+      .child(div().w(numberWidth).flex_none().truncate().text_right().text_size(z(12)).text_color(t.dim).child(`#${it.number}`))
+      .child(div().flex_1().min_w(0).truncate().child(it.title))
+      .child(div().w(z(80)).flex_none().truncate().text_size(z(12)).text_color(t.muted).child(author))
+      .child(div().w(z(32)).flex_none().text_right().text_size(z(12)).text_color(t.dim).child(age));
   }
 
   checksView(t) {
-    if (this.checksError) return div().text_size(11).text_color(t.ansi1).child(`Checks: ${this.checksError}`);
+    if (this.checksError) return div().text_size(z(11)).text_color(t.ansi1).child(`Checks: ${this.checksError}`);
     if (!this.checks) return null;
-    if (!this.checks.length) return div().text_size(11).text_color(t.dim).child("No checks");
+    if (!this.checks.length) return div().text_size(z(11)).text_color(t.dim).child("No checks");
     const summary = BUCKETS.map(([b, word]) => [this.checks.filter((c) => c.bucket === b).length, word]).filter(([n]) => n).map(([n, word]) => `${n} ${word}`).join(", ");
     const color = Object.fromEntries(BUCKETS.map(([b, , token]) => [b, t[token]]));
-    return v_flex().gap(2).text_size(11)
+    return v_flex().gap(2).text_size(z(11))
       .child(div().text_color(t.muted).child(`Checks: ${summary}`))
       .children(this.checks.filter((c) => c.bucket === "fail" || c.bucket === "pending").map((c, i) =>
         h_flex().id(`check-${i}`).gap(6).min_w(0).items_center().cursor_pointer().hover((s) => s.text_color(t.foreground)).text_color(t.muted)
@@ -365,7 +374,7 @@ export default class GitHub extends View {
   detailView(t) {
     const d = this.detail, it = d ?? this.items.find((i) => i.number === this.selected) ?? { number: this.selected };
     const n = it.number, checks = this.kind === "prs" ? this.checksView(t) : null, opened = d && ago(d.createdAt);
-    const meta = [it.author?.login, opened && (opened === "now" ? "opened just now" : `opened ${opened} ago`), REVIEW[it.reviewDecision]].filter(Boolean).join(" · ");
+    const meta = [it.author?.login, opened && since("opened", opened), REVIEW[it.reviewDecision]].filter(Boolean).join(" · ");
     return v_flex().id("detail").flex_1().min_h(0).overflow_y_scrollbar().p(12).gap(10)
       .child(h_flex().gap(6).items_start()
         .child(div().flex_1().min_w(0).font_semibold().child(it.title ? `${it.title} #${n}` : `#${n}`))
@@ -373,19 +382,20 @@ export default class GitHub extends View {
           .child(this.button("copy-link", "mods/my-github/copy.svg", "Copy link", (cx) => cx.write_to_clipboard(it.url), t))
           .child(this.button("open-item", "mods/my-github/external.svg", "Open in browser", (cx) => cx.open_url(it.url), t)))
         .child(this.button("close-detail", "mods/my-github/x.svg", "Close", (cx) => { this.closeDetail(); cx.notify(); }, t)))
-      .when(Boolean(it.state), (e) => e.child(h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
+      .when(Boolean(it.state), (e) => e.child(h_flex().flex_wrap().gap(6).items_center().text_size(z(11)).text_color(t.dim)
         .child(div().px(6).rounded(8).text_color(t.background).bg(this.stateColor(it, t)).child(it.isDraft ? "DRAFT" : it.state))
-        .child(div().min_w(0).truncate().child(meta))))
-      .when(Boolean(it.headRefName), (e) => e.child(div().text_size(11).text_color(t.muted).truncate().child(`${it.headRefName} → ${it.baseRefName}`)))
+        .child(div().min_w(0).truncate().child(meta))
+        .children(this.labels(it.labels, t))))
+      .when(Boolean(it.headRefName), (e) => e.child(div().text_size(z(11)).text_color(t.muted).truncate().child(`${it.headRefName} → ${it.baseRefName}`)))
       .when(Boolean(d), (e) => e.child(this.writes(d, t)))
       .when(Boolean(checks), (e) => e.child(checks))
-      .when(Boolean(this.detailError), (e) => e.child(div().text_size(11).text_color(t.ansi1).child(this.detailError)))
+      .when(Boolean(this.detailError), (e) => e.child(div().text_size(z(11)).text_color(t.ansi1).child(this.detailError)))
       .when(this.detailLoading && !d, (e) => e.child(div().text_color(t.dim).child("Loading…")))
       .when(Boolean(d), (e) => e
         .child(TextView.markdown(`body-${n}`, d.body?.trim() || "_No description._").selectable().w_full())
-        .child(div().pt(4).text_size(11).text_color(t.dim).child(`${d.comments.length} comment${d.comments.length === 1 ? "" : "s"}${this.kind === "prs" ? " · review comments on code are on GitHub" : ""}`))
+        .child(div().pt(4).text_size(z(11)).text_color(t.dim).child(`${d.comments.length} comment${d.comments.length === 1 ? "" : "s"}${this.kind === "prs" ? " · review comments on code are on GitHub" : ""}`))
         .children(d.comments.map((c, i) => v_flex().gap(4).p(8).rounded(8).border_1().border_color(t.border)
-          .child(div().text_size(11).text_color(t.dim).child(`${c.author?.login ?? "ghost"} · ${ago(c.createdAt)}`))
+          .child(div().text_size(z(11)).text_color(t.dim).child(`${c.author?.login ?? "ghost"} · ${ago(c.createdAt)}`))
           .child(TextView.markdown(`comment-${n}-${i}`, c.body || " ").selectable().w_full())))
         .child(this.composer(t)));
   }
@@ -395,7 +405,7 @@ export default class GitHub extends View {
     const key = this.itemKey(), label = `${this.where.repo}#${d.number}`, busy = this.posting.has(key), unknown = this.unknown.get(key);
     const action = d.state === "OPEN" ? "close" : d.state === "CLOSED" ? "reopen" : null;
     const confirm = this.confirm?.key === key ? this.confirm : null;
-    return v_flex().gap(6).text_size(11)
+    return v_flex().gap(6).text_size(z(11))
       .child(h_flex().gap(4).items_center()
         .when(Boolean(action) && !confirm && !this.blocked(key), (e) => e.child(this.chip("state-action", `${cap(action)} ${this.k.noun}`, false,
           (cx) => { this.confirm = { key, where: this.where, n: String(d.number), action, label }; cx.notify(); }, t).border_1().border_color(t.border)))
@@ -417,9 +427,9 @@ export default class GitHub extends View {
     const enabled = Boolean(this.drafts.get(key)?.trim()) && !this.blocked(key);
     return v_flex().gap(6).pt(4)
       .child(div().id("comment-box").rounded(8).border_1().border_color(t.border).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .child(Textarea.new(this.comment).text_size(12)))
+        .child(Textarea.new(this.comment).text_size(z(12))))
       .child(h_flex().child(div().flex_1())
-        .child(div().id("post-comment").h(28).px(12).flex().items_center().rounded(7).text_size(12).min_w(0).truncate()
+        .child(div().id("post-comment").h(z(28)).px(12).flex().items_center().rounded(7).text_size(z(12)).min_w(0).truncate()
           .bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).when(enabled, (e) => e.cursor_pointer())
           .on_click((_e, cx) => { if (enabled) this.postComment(cx); }).child(this.posting.has(key) ? "Posting…" : `Post comment to ${label}`)));
   }
@@ -427,7 +437,7 @@ export default class GitHub extends View {
   message(t) {
     if (this.error) {
       const hint = { auth: "Run `gh auth login`", rate: "Rate limited, retrying in 5 min", timeout: "gh timed out" }[this.error.kind];
-      return h_flex().px(12).py(6).gap(8).items_center().text_size(11).text_color(t.ansi1)
+      return h_flex().px(12).py(6).gap(8).items_center().text_size(z(11)).text_color(t.ansi1)
         .child(div().flex_1().min_w(0).child([hint, this.error.message].filter(Boolean).join(": ")))
         .child(this.chip("retry", "Retry", false, (cx) => this.refresh(cx), t).text_color(t.foreground));
     }
@@ -435,6 +445,7 @@ export default class GitHub extends View {
   }
 
   render(cx) {
+    scale = panelScale(this.kind);
     const shown = this.visible();
     if (shown && (this.stamp() !== this.stamped || (!this.loading && this.due()))) this.refresh(cx);
     const request = findRequest(this.kind, shown);
@@ -443,33 +454,35 @@ export default class GitHub extends View {
       setShared("panel.find", null);
     }
     const t = theme(), w = this.where, repo = w?.repo, note = this.message(t), items = this.shown();
+    // From every loaded item, so filtering keeps the title column still; 0.65 em covers a 12px UI-font digit or "#".
+    const digits = this.items.reduce((n, it) => Math.max(n, String(it.number).length), 1), numberWidth = Math.ceil((digits + 1) * z(12) * 0.65);
     const empty = this.loading ? "Loading…" : repo && !this.error ? `No ${this.filter === "all" ? "" : this.filter + " "}${this.k.title.toLowerCase()}` : "";
-    return v_flex().id("github").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
-      .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
+    return v_flex().id("github").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13))
+      .child(h_flex().h(z(42)).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().flex_none().font_semibold().child(this.k.title))
-        .when(this.items.length > 0, (e) => e.child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(this.query ? `${items.length} of ${this.items.length}` : this.limited ? `${LIMIT}+` : String(this.items.length))))
+        .when(this.items.length > 0, (e) => e.child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(z(10)).text_color(t.muted).child(this.query ? `${items.length} of ${this.items.length}` : this.limited ? `${LIMIT}+` : String(this.items.length))))
         .child(div().flex_1())
-        .when(w?.choices?.length > 1, (e) => e.child(div().id("repo").min_w(0).max_w(180).h(22).px(8).flex().items_center().rounded(6).cursor_pointer().text_size(11).text_color(t.muted)
+        .when(w?.choices?.length > 1, (e) => e.child(div().id("repo").min_w(0).max_w(180).h(z(22)).px(8).flex().items_center().rounded(6).cursor_pointer().text_size(z(11)).text_color(t.muted)
           .when(Boolean(this.choosing), (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.choosing = !this.choosing; cx.notify(); })
           .child(div().min_w(0).truncate().child(`${repo} ▾`))))
-        .when(w?.choices?.length <= 1, (e) => e.child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child(repo)))
+        .when(w?.choices?.length <= 1, (e) => e.child(div().min_w(0).truncate().text_size(z(11)).text_color(t.dim).child(repo)))
         .when(Boolean(repo) && this.kind === "issues", (e) => e.child(this.button("new-issue", "mods/my-github/plus.svg", "New issue on GitHub", (cx) => cx.open_url(`https://github.com/${repo}/issues/new/choose`), t)))
         .when(Boolean(repo), (e) => e.child(this.button("open-repo", "mods/my-github/external.svg", "Open on GitHub", (cx) => cx.open_url(`https://github.com/${repo}/${this.k.path}`), t)))
         .child(this.button("refresh", "mods/my-github/refresh.svg", "Refresh", (cx) => this.refresh(cx), t, this.loading)))
-      .when(Boolean(w?.choices) && this.choosing, (e) => e.child(h_flex().flex_wrap().px(10).py(6).gap(4).border_b(1).border_color(t.border).text_size(11).text_color(t.muted)
+      .when(Boolean(w?.choices) && this.choosing, (e) => e.child(h_flex().flex_wrap().px(10).py(6).gap(4).border_b(1).border_color(t.border).text_size(z(11)).text_color(t.muted)
         .children(w.choices.map((c) => this.chip(`choose-${c}`, c, c === repo, (cx) => this.choose(c, cx), t)))))
-      .child(h_flex().flex_wrap().flex_none().px(10).py(5).gap(4).items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.muted)
+      .child(h_flex().flex_wrap().flex_none().px(10).py(5).gap(4).items_center().border_b(1).border_color(t.border).text_size(z(11)).text_color(t.muted)
         .children(this.k.filters.map((f) => this.chip(`filter-${f}`, cap(f), this.filter === f, (cx) => this.setFilter(f, cx), t)))
-        .child(div().id("search").flex_1().min_w(120).h(24).px(8).flex().items_center().rounded(6).border_1().border_color(this.typing ? t.accent : t.border).cursor_text()
-          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(11).text_color(t.foreground))))
+        .child(div().id("search").flex_1().min_w(120).h(z(24)).px(8).flex().items_center().rounded(6).border_1().border_color(this.typing ? t.accent : t.border).cursor_text()
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(z(11)).text_color(t.foreground))))
       .when(Boolean(this.finding), (e) => e.child(this.findRow(t, this.query ? `${items.length} found` : "")))
       .when(Boolean(note), (e) => e.child(note))
       .child(v_flex().id("github-body").flex_1().min_h(0).relative().on_mouse_up("left", (_e, cx) => this.endDrag(cx))
       .child(v_flex().id("items").when(Boolean(this.selected), (e) => e.h(`${this.listShare * 100}%`).flex_none()).when(!this.selected, (e) => e.flex_1()).min_h(0).overflow_y_scrollbar().p(6)
-        .children(items.map((it) => this.row(it, t)))
+        .children(items.map((it) => this.row(it, t, numberWidth)))
         .when(!this.items.length && Boolean(empty), (e) => e.child(div().p(8).text_color(t.dim).child(empty)))
         .when(this.items.length > 0 && !items.length, (e) => e.child(div().p(8).text_color(t.dim).child(exactNumber(this.query) ? `Not loaded: Enter opens #${exactNumber(this.query)}` : "No matching loaded items")))
-        .when(this.limited, (e) => e.child(div().p(8).text_size(11).text_color(t.dim).child(`Showing the first ${LIMIT}: refine the search to see more`))))
+        .when(this.limited, (e) => e.child(div().p(8).text_size(z(11)).text_color(t.dim).child(`Showing the first ${LIMIT}: refine the search to see more`))))
       .when(Boolean(this.selected), (e) => e
         .child(div().id("github-divider").h(5).w_full().flex_none().flex().flex_col().justify_center().cursor_row_resize().child(div().h(1).w_full().bg(t.border))
           .on_mouse_down("left", (_e, cx) => this.startDrag(cx)))

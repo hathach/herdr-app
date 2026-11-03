@@ -6,15 +6,16 @@ export const CUT = "… (line truncated)";
 // Numbers each diff line once, so a frame only draws the rows on screen. `raw` keeps the line's own text; `text` is
 // what is drawn (an empty line draws as one space).
 export function diffRows(lines) {
-  let old = 0, next = 0;
+  let old = 0, next = 0, before = null;
   return lines.map((line) => {
-    const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
-    if (match) { old = +match[1]; next = +match[2]; return { kind: "@", text: line }; }
-    const kind = line[0], raw = line.slice(1);
+    const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line), kind = match ? "@" : line[0], raw = line.slice(1), last = before;
+    before = kind;
+    if (match) { old = +match[1]; next = +match[2]; return { kind, text: line }; }
     if (kind === "-") return { kind, old: old++, raw, text: raw || " " };
     if (kind === "+") return { kind, new: next++, raw, text: raw || " " };
     if (kind === " ") return { kind, old: old++, new: next++, raw, text: raw || " " };
-    return { kind: "", text: line };
+    // A "\ No newline at end of file" marker belongs to the change it follows: same side, same tint.
+    return line.startsWith("\\") && (last === "+" || last === "-") ? { kind: "", text: line, tint: last } : { kind: "", text: line };
   });
 }
 
@@ -27,8 +28,7 @@ export function splitRows(rows) {
       out.push(row.kind === " " ? { left: row, right: row } : row);
       i++; continue;
     }
-    // A "\ No newline at end of file" marker stays with the line above it instead of ending the run.
-    const take = (kind, list) => { while (rows[i]?.kind === kind || (list.length && rows[i]?.kind === "" && rows[i].text.startsWith("\\"))) list.push(rows[i++]); };
+    const take = (kind, list) => { while (rows[i]?.kind === kind || rows[i]?.tint === kind) list.push(rows[i++]); };
     const del = [], add = [];
     take("-", del); take("+", add);
     for (let j = 0; j < Math.max(del.length, add.length); j++) out.push({ left: del[j], right: add[j] });

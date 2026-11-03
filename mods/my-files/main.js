@@ -23,10 +23,16 @@ const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
 const SIDES = { left: { direction: "flex_row", axis: "across" }, top: { direction: "flex_col", axis: "down" },
   right: { direction: "flex_row_reverse", axis: "across", far: true }, bottom: { direction: "flex_col_reverse", axis: "down", far: true } };
 
-// Code text uses the terminal's font, at the block's `code_font_size` prop, else the terminal's size (px at zoom 1);
-// row heights and character widths follow it, with ratios for a JetBrains Mono-like font.
+// This panel's text size (my-tabs' A−/A+ while it shows, px at zoom 1): text, the heights around it and text columns scale
+// from 13; icons, indents and truncation limits stay.
+let scale = 1;
+const z = (px) => px * scale;
+const panelScale = () => (Number(shared("panel.text_size.files")) || 13) / 13;
+
+// Code text uses the terminal's font, at the block's `code_font_size` prop, else the terminal's size (px at zoom 1),
+// times the panel scale; row heights and character widths follow it, with ratios for a JetBrains Mono-like font.
 function codeMetrics() {
-  const s = settings(), size = Number(props()?.code_font_size) || Number(s.font_size) || 14;
+  const s = settings(), size = (Number(props()?.code_font_size) || Number(s.font_size) || 14) * scale;
   return { family: s.font_family ?? "JetBrains Mono", size, row: Math.round(size * 1.6), char: size * 0.62, numbers: Math.ceil(size * 0.62 * 4) };
 }
 
@@ -264,11 +270,11 @@ export default class Files extends View {
     const index = this.index?.key === this.context?.key ? this.index : null;
     const note = index?.error ?? (!index ? "Indexing…" : !this.query ? (index.tree ? "Loaded folders only" : "Tracked and untracked, not ignored")
       : `${found.list.length} found${index.tree ? " in loaded folders" : ""}`);
-    return v_flex().id("find").flex_none().px(10).py(5).gap(3).border_b(1).border_color(t.border).text_size(11).text_color(index?.error ? t.ansi1 : t.dim)
+    return v_flex().id("find").flex_none().px(10).py(5).gap(3).border_b(1).border_color(t.border).text_size(z(11)).text_color(index?.error ? t.ansi1 : t.dim)
       .track_focus(this.findHandle).on_key_down((e, cx) => { if (e.key === "escape") { this.closeFind(true); cx.stop_propagation(); cx.notify(); } })
       .child(h_flex().gap(6).items_center()
-        .child(div().id("find-box").flex_1().min_w(0).h(24).px(8).flex().items_center().rounded(6).border_1().border_color(this.findFocused ? t.accent : t.border).cursor_text()
-          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.findInput).h_full().text_size(11).text_color(t.foreground)))
+        .child(div().id("find-box").flex_1().min_w(0).h(z(24)).px(8).flex().items_center().rounded(6).border_1().border_color(this.findFocused ? t.accent : t.border).cursor_text()
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.findInput).h_full().text_size(z(11)).text_color(t.foreground)))
         .child(this.button("find-close", "mods/my-files/x.svg", "Close find (Esc)", cx => { this.closeFind(); cx.notify(); }, t)))
       .child(div().min_w(0).truncate().child(note));
   }
@@ -277,12 +283,12 @@ export default class Files extends View {
     const list = found.list;
     return v_flex().id("files-found").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(list.slice(0, FOUND).map(({ path, base }) => {
       const parts = path.split("/"), name = parts.pop();
-      return h_flex().id(`found-${base}/${path}`).h(28).flex_none().px(8).gap(7).items_center().rounded(7).cursor_pointer()
+      return h_flex().id(`found-${base}/${path}`).h(z(28)).flex_none().px(8).gap(7).items_center().rounded(7).cursor_pointer()
         .when(this.file === path && this.fileBase === base, el => el.bg(t.selected)).hover(s => s.bg(t.hover)).on_click((_e, cx) => this.show(path, cx, base))
         .child(svg("mods/my-files/file.svg").size(14).flex_none().text_color(t.muted))
         .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)));
-    })).when(list.length > FOUND, el => el.child(div().p(8).text_size(11).text_color(t.dim).child(`Showing the first ${FOUND} of ${list.length}: refine the search`)))
-      .when(!list.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child("No matching files")));
+    })).when(list.length > FOUND, el => el.child(div().p(8).text_size(z(11)).text_color(t.dim).child(`Showing the first ${FOUND} of ${list.length}: refine the search`)))
+      .when(!list.length, el => el.child(div().p(8).text_size(z(12)).text_color(t.dim).child("No matching files")));
   }
 
   // Read-only like the editor, without its selection; the same font and line numbers.
@@ -332,12 +338,12 @@ export default class Files extends View {
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
-      out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().when(this.file === path && this.fileBase === this.root, el => el.bg(t.selected)).hover(s => s.bg(t.hover))
+      out.push(h_flex().id(`file-${path}`).h(z(28)).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().when(this.file === path && this.fileBase === this.root, el => el.bg(t.selected)).hover(s => s.bg(t.hover))
         .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
         .child(entry.dir ? svg(`mods/my-files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
         .child(svg(`mods/my-files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).truncate().child(entry.name))
-        .when(Boolean(mark), el => el.child(div().text_size(11).text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark))));
+        .when(Boolean(mark), el => el.child(div().text_size(z(11)).text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark))));
       if (entry.dir && open) this.rows(path, depth + 1, out, t);
     }
     return out;
@@ -345,8 +351,8 @@ export default class Files extends View {
 
   tree(t) {
     return v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
-      .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
-      .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")));
+      .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(z(12)).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
+      .when(this.limited, el => el.child(div().p(8).text_size(z(11)).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")));
   }
 
   body(t, found) {
@@ -373,6 +379,7 @@ export default class Files extends View {
   }
 
   render(cx) {
+    scale = panelScale();
     if (key() !== this.context?.key) this.refresh(cx);
     // The editor takes its font when made: a terminal font change reopens the preview with the new one.
     const mono = codeMetrics();
@@ -383,10 +390,10 @@ export default class Files extends View {
       setShared("panel.find", null);
     }
     const t = theme(), found = this.finding ? this.found() : null;
-    return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
-      .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
+    return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13))
+      .child(h_flex().h(z(42)).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Files"))
-        .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? ""))
+        .child(div().flex_1().min_w(0).truncate().text_right().text_size(z(12)).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? ""))
         .when(Boolean(this.file), el => el
           .child(this.button("files-side", `mods/my-files/panel-${this.side}.svg`, `Tree on the ${this.side} · move it`, cx => this.moveTree(cx), t))
           .child(this.button("files-close", "mods/my-files/x.svg", "Close the preview", cx => { this.show(null); cx.notify(); }, t))))

@@ -8,9 +8,9 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   foreground runs as `claude-ada` (the wrapper does `exec -a claude-ada claude`).
 - `programs.json`: `claude-ada` counts as Claude Code before its first status report.
 - `mods/my-changes`: Herdr's Changes panel plus a side-by-side diff view, an open-in-a-pane button, a branch scope
-  (changes vs the default branch, with fetch), a file list resizable in eighths, and C/C++, Python, Markdown and reST
-  diffs coloured by `syntax.js`, a line lexer (not a parser). Tests: `node --no-warnings --test
-  mods/my-changes/syntax.test.mjs`.
+  (changes vs the default branch, with fetch), changed files as a folder tree like Files (flat matches while finding)
+  resizable in eighths, and C/C++, Python, Markdown and reST diffs coloured by `syntax.js`, a line lexer (not a
+  parser). Tests: `node --no-warnings --test mods/my-changes/*.test.mjs`.
 - `mods/my-files`: Herdr's Files panel showing the tree and a file preview together, with the tree on any side and
   resizable in eighths. Markdown and reST previews are coloured by its copy of `syntax.js` (kept identical to
   my-changes', checked by the test); they are read-only lines without text selection. Other files use Herdr's editor.
@@ -24,12 +24,15 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   confirm. Only the `upstream` and `origin` remotes count, never other forks: the one picked in the panel, else
   `gh repo set-default`'s, else `upstream`, else `origin`; github.com only. Helper tests:
   `node --no-warnings --test mods/my-github/github.test.mjs`.
-- `mods/my-tabs`: Herdr's tab bar plus Issues and PRs buttons for the side panel.
+- `mods/my-tabs`: Herdr's tab bar plus Issues and PRs buttons for the side panel, and while it is open, A−/A+ for the
+  shown panel's text size (shared `panel.text_size.<files|changes|issues|prs>`, 10–20 px at zoom 1, default 13): each
+  panel scales its text and rows from its own. Herdr's Settings screen can't take extra rows (`frame/` is rewritten on
+  every start).
 - `layouts/my-main.json`: Herdr's `main` layout with its tab bar, agents list and Files and Changes panels pointed at
   `my-tabs`, `my-agents`, `my-files` and `my-changes`, Issues and PRs panels from `my-github`, a side panel sized by
   share (default 3/8, no fixed pixel maximum) and `my-panel-snap` in it. The Files and Changes blocks' prop
-  `code_font_size` (12) sizes the diff and file preview text, in the terminal's font; without it they use the
-  terminal's size.
+  `code_font_size` (13, the panels' list size) sizes the diff and file preview text, in the terminal's font, at the
+  default panel text size; without it they use the terminal's size.
 
 ## Use on another machine
 

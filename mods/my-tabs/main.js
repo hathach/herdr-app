@@ -3,6 +3,11 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, focused, nextCommand } from "herdr";
 
+// Each side panel's text size, `panel.text_size.<panel>`, px at zoom 1; the panel mods scale from 13.
+const TEXT = { key: "panel.text_size", base: 13, min: 10, max: 20 };
+const PANELS = { files: ["Files", "mods/files/file.svg"], changes: ["Changes", "mods/changes/changes.svg"],
+  issues: ["Issues", "mods/my-github/issues.svg"], prs: ["PRs", "mods/my-github/prs.svg"] };
+
 function find(node, id) {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
@@ -99,8 +104,9 @@ export default class Tabs extends View {
     const panel = find(root, "panel"), body = find(root, "panel-body");
     const enabled = enabledPanels(body);
     this.syncPanel(space, panel, body, enabled);
+    const panelShown = Boolean(panel && !panel.hidden);
     const panelButton = (id, label, icon) => {
-      const on = panel && !panel.hidden && body?.active === id;
+      const on = panelShown && body?.active === id;
       return h_flex().id(`panel-${id}`).h(26).px(8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
@@ -109,15 +115,19 @@ export default class Tabs extends View {
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14)).child(label);
     };
+    const textKey = `${TEXT.key}.${body?.active}`, textSize = Number(shared(textKey)) || TEXT.base;
+    const textStep = (id, label, by) => button(id, label, () => {
+      const next = Math.min(TEXT.max, Math.max(TEXT.min, textSize + by));
+      if (next !== textSize) setShared(textKey, next);
+    })
+      .w(22).text_size(12).tooltip(`${PANELS[body?.active]?.[0] ?? "Panel"} text ${textSize}px`);
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
-      .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
-      .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
-      .when(enabled.includes("issues"), el => el.child(panelButton("issues", "Issues", "mods/my-github/issues.svg")))
-      .when(enabled.includes("prs"), el => el.child(panelButton("prs", "PRs", "mods/my-github/prs.svg")))
+      .children(Object.keys(PANELS).filter(id => enabled.includes(id)).map(id => panelButton(id, ...PANELS[id])))
+      .when(panelShown, el => el.child(h_flex().mx(4).child(textStep("panel-text-smaller", "A−", -1)).child(textStep("panel-text-larger", "A+", 1))))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/my-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/my-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/my-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

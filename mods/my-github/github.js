@@ -102,6 +102,9 @@ export function ago(iso, now = Date.now()) {
   return "now";
 }
 
+// An ago() result as a phrase: ("opened", "3d") -> "opened 3d ago", ("opened", "now") -> "opened just now".
+export const since = (verb, age) => age === "now" ? `${verb} just now` : `${verb} ${age} ago`;
+
 // "123" or "#123" -> 123; anything else -> null.
 export function exactNumber(query) {
   const m = /^#?(\d+)$/.exec(query.trim()), n = m && Number(m[1]);

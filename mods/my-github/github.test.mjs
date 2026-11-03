@@ -1,7 +1,7 @@
 // node --no-warnings --test mods/my-github/github.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseRemote, parseRemotes, ghDefault, pickRepo, classifyError, classifyRejection, parseChecks, ago, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
+import { parseRemote, parseRemotes, ghDefault, pickRepo, classifyError, classifyRejection, parseChecks, ago, since, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
 
 test("parseRemote reads ssh, scp-like and https URLs", () => {
   const want = { host: "github.com", repo: "hathach/tinyusb" };
@@ -92,6 +92,7 @@ test("ago", () => {
   assert.equal(ago("2026-11-02T11:59:30Z", now), "now");
   assert.equal(ago("2026-11-02T11:00:00Z", now), "1h");
   assert.equal(ago("2026-10-30T12:00:00Z", now), "3d");
+  assert.deepEqual([since("opened", "3d"), since("updated", "now")], ["opened 3d ago", "updated just now"]);
 });
 
 test("writeOutcome", () => {

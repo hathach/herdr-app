@@ -108,6 +108,14 @@ test("splitRows keeps both sides' rows", () => {
   assert.deepEqual([pairs[2].left.raw, pairs[2].right.raw], ["b", "c"]);
 });
 
+test("a no-newline marker is tinted as the change it follows, never after context", () => {
+  const rows = diffRows(["@@ -1,2 +1,2 @@", "-a", "\\ No newline at end of file", "+b", "\\ No newline at end of file", " c", "\\ No newline at end of file"]);
+  assert.deepEqual(rows.map((r) => r.tint), [undefined, undefined, "-", undefined, "+", undefined, undefined]);
+  const pairs = splitRows(rows);
+  assert.deepEqual(pairs.slice(1, 3).map((p) => [p.left?.text, p.right?.text]), [["a", "b"], ["\\ No newline at end of file", "\\ No newline at end of file"]]);
+  assert.deepEqual([pairs[2].left.tint, pairs[2].right.tint, pairs[4].kind], ["-", "+", ""]);
+});
+
 test("Markdown HTML comments: across lines, never from inside a code span", () => {
   assert.deepEqual(marked("markdown", "a <!-- b\nc -->d\nUse `<!--` here.\nprose"), ["a [comment:<!-- b]", "[comment:c -->]d", "Use [literal:`<!--`] here.", "prose"]);
   assert.deepEqual(marked("markdown", "x <!-- y --> z\nw"), ["x [comment:<!-- y -->] z", "w"]);
