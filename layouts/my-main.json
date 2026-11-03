@@ -181,6 +181,38 @@
                           "kind": "prs"
                         }
                       }
+                    },
+                    {
+                      "id": "git",
+                      "type": "column",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "id": "git-log",
+                          "type": "block",
+                          "size": {
+                            "weight": 3
+                          },
+                          "content": {
+                            "mod": "my-git"
+                          }
+                        },
+                        {
+                          "id": "git-changes",
+                          "type": "block",
+                          "size": {
+                            "weight": 5
+                          },
+                          "content": {
+                            "mod": "my-changes",
+                            "props": {
+                              "source": "git",
+                              "panel": "git",
+                              "code_font_size": 13
+                            }
+                          }
+                        }
+                      ]
                     }
                   ],
                   "active": "files"

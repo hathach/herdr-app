@@ -3,6 +3,27 @@ import { highlightLines } from "./syntax.js";
 
 export const CUT = "… (line truncated)";
 
+// `--numstat -z` outputs -> { path: { add, del, binary } }, summed across them (staged plus unstaged).
+export function parseNumstat(texts) {
+  const stats = {};
+  for (const text of texts) {
+    for (const entry of text.split("\0")) {
+      const [a, d, ...parts] = entry.split("\t");
+      if (!parts.length) continue;
+      const path = parts.join("\t"), old = stats[path] ?? { add: 0, del: 0 };
+      stats[path] = { add: old.add + (Number(a) || 0), del: old.del + (Number(d) || 0), binary: a === "-" };
+    }
+  }
+  return stats;
+}
+
+// `--name-status -z --no-renames` -> files { path, status: A | D | U | M, fresh: false }.
+export function parseNameStatus(text) {
+  const parts = text.split("\0"), files = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) files.push({ path: parts[i + 1], status: "ADU".includes(parts[i][0]) ? parts[i][0] : "M", fresh: false });
+  return files;
+}
+
 // Numbers each diff line once, so a frame only draws the rows on screen. `raw` keeps the line's own text; `text` is
 // what is drawn (an empty line draws as one space).
 export function diffRows(lines) {
@@ -52,9 +73,10 @@ export function wholeSides(text) {
   return { old: whole(header[1], header[2], old), new: whole(header[3], header[4], next) };
 }
 
-// Runs for each side's whole lines, once per load: { old, new }, each { lines, runs } or null.
+// Runs for each side's whole lines, once per load: { old, new }, each { lines, runs } or null. Both sides are lexed in
+// one script task, so they share one deadline.
 export function colourSides(sides, lang) {
-  const side = (lines) => lines && { lines, runs: highlightLines(lang, lines) };
+  const deadline = Date.now() + 250, side = (lines) => lines && { lines, runs: highlightLines(lang, lines, undefined, deadline) };
   return { old: side(sides.old), new: side(sides.new) };
 }
 

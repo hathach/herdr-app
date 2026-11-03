@@ -1,4 +1,4 @@
-// Modified from Herdr's shipped `tabs` mod (Apache-2.0): Issues and PRs side panel buttons.
+// Modified from Herdr's shipped `tabs` mod (Apache-2.0): Issues, PRs and Git side panel buttons.
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, focused, nextCommand } from "herdr";
@@ -6,7 +6,7 @@ import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layo
 // Each side panel's text size, `panel.text_size.<panel>`, px at zoom 1; the panel mods scale from 13.
 const TEXT = { key: "panel.text_size", base: 13, min: 10, max: 20 };
 const PANELS = { files: ["Files", "mods/files/file.svg"], changes: ["Changes", "mods/changes/changes.svg"],
-  issues: ["Issues", "mods/my-github/issues.svg"], prs: ["PRs", "mods/my-github/prs.svg"] };
+  issues: ["Issues", "mods/my-github/issues.svg"], prs: ["PRs", "mods/my-github/prs.svg"], git: ["Git", "mods/workspace-chrome/git-branch.svg"] };
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -20,7 +20,7 @@ function find(node, id) {
 // The shared setting lists only Herdr's own panels; ours count whenever the panel stack has them.
 function enabledPanels(body) {
   const children = body?.children?.map(c => c.id) ?? [];
-  return [...(shared("workspace.panels") ?? ["files", "changes"]), "issues", "prs"].filter(id => children.includes(id));
+  return [...(shared("workspace.panels") ?? ["files", "changes"]), "issues", "prs", "git"].filter(id => children.includes(id));
 }
 
 export default class Tabs extends View {

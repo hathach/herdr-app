@@ -1,9 +1,10 @@
 // Modified from Herdr's shipped `changes` mod (Apache-2.0): side-by-side view, open in a pane, branch scope.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { diffRows, splitRows, wholeSides, colourSides, paint, CUT } from "./diff.js";
+import { diffRows, splitRows, wholeSides, colourSides, paint, parseNumstat, parseNameStatus, CUT } from "./diff.js";
 import { languageOf, COLORS } from "./syntax.js";
 import { fileTree, treeRows } from "./tree.js";
+import { failure, commitBase, treeDiff } from "./commit.js";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, run, layout, shared, setShared, props } from "herdr";
 
 function location() {
@@ -15,6 +16,12 @@ function location() {
 // Reads write nothing under .git (no index refresh or lock, no fsmonitor cookie):
 // the folder watch would see it, and every refresh would start the next one.
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
+// The Git panel's commit reads also never fetch a partial clone's missing objects.
+const HISTORY = [...READ, "--no-lazy-fetch", "--no-pager", "--literal-pathspecs"];
+// my-git's picked commit, for a copy with props.source "git".
+const SELECTION = "git.selection";
+// Changed files with their counts, the first 1,000; a fresh (untracked) file's lines are counted when it loads.
+const statFiles = (changed, stats) => changed.slice(0, 1000).map((f) => ({ ...f, ...((!f.fresh && stats[f.path]) || { add: 0, del: 0 }) }));
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 
 // The repo's default branch: what a PR from this checkout targets unless told otherwise.
@@ -63,7 +70,7 @@ function findPaths(list, query, path = (x) => x) {
 // from 13; icons, indents and truncation limits stay.
 let scale = 1;
 const z = (px) => px * scale;
-const panelScale = () => (Number(shared("panel.text_size.changes")) || 13) / 13;
+const panelScale = () => (Number(shared(`panel.text_size.${props()?.panel ?? "changes"}`)) || 13) / 13;
 
 // Code text uses the terminal's font, at the block's `code_font_size` prop, else the terminal's size (px at zoom 1),
 // times the panel scale; row heights and character widths follow it, with ratios for a JetBrains Mono-like font.
@@ -84,13 +91,16 @@ export default class Changes extends View {
   init(given, cx) {
     // As a pane (opened from the panel) it stays on the repo it was opened for instead of following focus.
     this.pinned = given?.root ? { cwd: given.root, on: given.on ?? null } : null;
-    const mode = this.pinned ? "pane" : "panel";
+    // In the Git panel it shows my-git's picked commit, read-only, as the side panel `panel`.
+    this.source = props()?.source === "git"; this.panel = props()?.panel ?? "changes";
+    const mode = this.source ? "git" : this.pinned ? "pane" : "panel";
+    this.roots = new Map();
     this.splitKey = `split:${mode}`; this.scopeKey = `scope:${mode}`;
     this.split = localStorage.getItem(this.splitKey) !== "false";
     this.scope = given?.scope ?? localStorage.getItem(this.scopeKey) ?? "work";
     this.listKey = `list:${mode}`; this.listShare = Number(localStorage.getItem(this.listKey)) || null;
     this.place = this.placeKey(); this.context = this.key(); this.open = given?.open ?? null;
-    this.files = []; this.rows = []; this.pairs = []; this.diffChars = 0; this.message = ""; this.handle = cx.focus_handle();
+    this.picked = null; this.files = []; this.rows = []; this.pairs = []; this.diffChars = 0; this.message = ""; this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "Commit message" });
     this.input.on("change", (_e, cx) => {
       const hadMessage = Boolean(this.message.trim());
@@ -107,12 +117,18 @@ export default class Changes extends View {
     this.findInput.on("focus", (_e, cx) => { this.findFocused = this.findLanded = true; cx.notify(); });
     this.findInput.on("blur", (_e, cx) => { this.findFocused = false; cx.notify(); });
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    // A commit never changes: its copy refreshes only when the pick or the repo does, or to retry a failed read.
+    cx.timer.every(10000, (cx) => { if (!this.source || this.retry) this.refresh(cx); });
   }
 
   where() { return this.pinned ?? location(); }
-  placeKey() { return JSON.stringify(this.where()); }
-  key() { return JSON.stringify({ ...this.where(), scope: this.scope }); }
+  // The Git copy keys by the repo a folder resolved to, so focus moving inside one repo keeps the view.
+  repoOf(where) { return (this.source && this.roots.get(JSON.stringify(where))) || where; }
+  placeKey() { return JSON.stringify(this.repoOf(this.where())); }
+  key() {
+    const pick = this.source && shared(SELECTION);
+    return JSON.stringify({ ...this.repoOf(this.where()), scope: this.source ? `git:${pick?.sha ?? ""}:${pick?.gen ?? ""}` : this.scope });
+  }
 
   setScope(scope, cx) {
     // A commit or fetch reports into the scope it started in.
@@ -123,7 +139,7 @@ export default class Changes extends View {
   }
 
   fetchBase(cx) {
-    if (!this.base || !this.root || this.fetching || this.context !== this.key()) return;
+    if (this.source || !this.base || !this.root || this.fetching || this.context !== this.key()) return;
     const root = this.root, on = this.on, context = this.context, branch = this.base.slice("origin/".length);
     this.fetching = true; this.note = null; this.baseCache = null;
     cx.spawn(async (cx) => {
@@ -166,8 +182,8 @@ export default class Changes extends View {
     this.again = false;
     const { cwd, on } = this.where(), context = this.key();
     if (context !== this.context) {
-      this.context = context; this.base = null; this.from = null; this.files = [];
-      this.setLines([]); this.error = null; this.note = null; this.closed = false; this.limited = false;
+      this.context = context; this.base = null; this.from = null; this.files = []; this.picked = null;
+      this.setLines([]); this.error = null; this.retry = false; this.note = null; this.closed = false; this.limited = false;
       // A scope switch keeps the repo, its watch, the commit message and the selected file.
       const place = this.placeKey();
       if (place !== this.place) {
@@ -179,10 +195,16 @@ export default class Changes extends View {
     this.loading = true;
     cx.spawn(async (cx) => {
       try {
-        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
+        // A cached root is trusted while the pick agrees with it; a pick for another repo asks again (a folder can
+        // become a repo of its own).
+        const folder = JSON.stringify({ cwd, on }), known = this.source && this.roots.get(folder), pick = known && shared(SELECTION);
+        const trusted = known && (!pick || (pick.root === known.root && pick.on === known.on));
+        const top = trusted ? { code: 0, stdout: known.root } : await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
+        if (this.source) { if (top.code === 0) this.roots.set(folder, { root: top.stdout.trim(), on }); else this.roots.delete(folder); }
         if (this.key() !== context) return;
         if (top.code !== 0) { this.root = null; this.files = []; this.setLines([]); this.open = null; this.error = "Not a git repository"; return; }
         const root = top.stdout.trim(), git = (args) => exec("git", [...READ, ...args], { cwd: root, on });
+        if (this.source) return await this.loadCommit(root, on, context, cx);
         const status = await git(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]);
         if (status.code !== 0) throw new Error(status.stderr);
         const head = await git(["rev-parse", "--verify", "HEAD"]);
@@ -195,17 +217,9 @@ export default class Changes extends View {
           if (mb.code !== 0) throw new Error(`No common history with ${base}`);
           from = mb.stdout.trim();
         }
-        const stats = {};
         const results = from ? [await git(["diff", from, "--numstat", "-z", "--no-renames"])] : [await git(["diff", "--cached", "--numstat", "-z", "--no-renames"]), await git(["diff", "--numstat", "-z", "--no-renames"])];
-        for (const result of results) {
-          if (result.code !== 0) throw new Error(result.stderr);
-          for (const entry of result.stdout.split("\0")) {
-            const [a, d, ...parts] = entry.split("\t");
-            if (!parts.length) continue;
-            const path = parts.join("\t"), old = stats[path] ?? { add: 0, del: 0 };
-            stats[path] = { add: old.add + (Number(a) || 0), del: old.del + (Number(d) || 0), binary: a === "-" };
-          }
-        }
+        for (const result of results) if (result.code !== 0) throw new Error(result.stderr);
+        const stats = parseNumstat(results.map((r) => r.stdout));
         let changed = status.stdout.split("\0").filter(Boolean).map((entry) => {
           const xy = entry.slice(0, 2), path = entry.slice(3), fresh = xy === "??";
           const conflict = xy.includes("U") || xy === "AA" || xy === "DD";
@@ -214,25 +228,18 @@ export default class Changes extends View {
         if (base) {
           const names = await git(["diff", from, "--name-status", "-z", "--no-renames"]);
           if (names.code !== 0) throw new Error(names.stderr);
-          const parts = names.stdout.split("\0"), tracked = [];
-          for (let i = 0; i + 1 < parts.length; i += 2) tracked.push({ path: parts[i + 1], status: "ADU".includes(parts[i][0]) ? parts[i][0] : "M", fresh: false });
+          const tracked = parseNameStatus(names.stdout);
           // Status knows conflicts and untracked files; an untracked file recreated over a deleted one shows once, as new.
           const rows = new Map(tracked.map((f) => [f.path, f]));
           for (const f of changed) if (f.fresh || f.status === "U") rows.set(f.path, f);
           changed = [...rows.values()];
         }
-        const files = changed.slice(0, 1000).map((f) => ({ ...f, ...((!f.fresh && stats[f.path]) || { add: 0, del: 0 }) }));
+        const files = statFiles(changed, stats);
         if (this.key() !== context) return;
         this.root = root; this.on = on; this.from = from; this.base = base; this.files = files; this.limited = changed.length > 1000; this.error = null;
         this.watch(root, cx);
-        if (this.open && !files.some((f) => f.path === this.open)) { this.open = null; this.setLines([]); }
-        // The first file's diff shows until you pick another.
-        if (!this.open && !this.closed && files.length) this.open = files[0].path;
-        if (this.open) {
-          try { await this.load(this.open, context); }
-          catch { if (this.key() === context) this.setLines(["Cannot preview this diff (too large or unreadable)"]); }
-        }
-      } catch (e) { if (this.key() === context) this.error = String(e); }
+        await this.showFiles(context, cx, () => "Cannot preview this diff (too large or unreadable)");
+      } catch (e) { if (this.key() === context) { this.error = String(e); this.retry = true; } }
       finally {
         this.loading = false;
         // A fetch that ended mid-refresh needs one more pass against its new refs.
@@ -242,13 +249,45 @@ export default class Changes extends View {
     });
   }
 
-  async load(path, context) {
+  // The first file's diff shows until you pick another; one no longer changed closes.
+  async showFiles(context, cx, failText) {
+    const files = this.files;
+    if (this.open && !files.some((f) => f.path === this.open)) { this.open = null; this.setLines([]); }
+    if (!this.open && !this.closed && files.length) this.open = files[0].path;
+    if (this.open) {
+      try { await this.load(this.open, context, cx); }
+      catch (e) { if (this.key() === context) this.setLines([failText(e)]); }
+    }
+  }
+
+  // my-git's picked commit, when it is for this repo, against its first parent (nothing, for a root commit).
+  async loadCommit(root, on, context, cx) {
+    const pick = shared(SELECTION), commit = pick?.on === on && pick?.root === root ? pick : null;
+    const git = (args) => exec("git", [...HISTORY, ...args], { cwd: root, on });
+    let files = [], changed = [], base = null;
+    try {
+      if (commit) base = await commitBase(git, commit.sha, commit.parents);
+      if (base && !base.unavailable) {
+        const tree = (...options) => git([...treeDiff(base, commit.sha, ...options), "--"]);
+        const [names, numbers] = await Promise.all([tree("--name-status", "-z"), tree("--numstat", "-z")]);
+        for (const r of [names, numbers]) if (r.code !== 0) throw failure(r);
+        changed = parseNameStatus(names.stdout); files = statFiles(changed, parseNumstat([numbers.stdout]));
+      }
+    } catch (e) { throw new Error(`Preview unavailable: ${e.message ?? e}`); }
+    if (this.key() !== context) return;
+    this.retry = false;
+    this.root = root; this.on = on; this.picked = commit && { ...commit, ...base }; this.files = files; this.limited = changed.length > 1000;
+    this.error = base?.unavailable ? `Parent object unavailable: ${base.parent.slice(0, 7)} is not in this clone` : null;
+    await this.showFiles(context, cx, (e) => `Preview unavailable: ${e.message ?? e}`);
+  }
+
+  async load(path, context, cx) {
     // Only the newest load publishes: a refresh can start another load of the same file before this one ends.
     const file = this.files.find((f) => f.path === path), root = this.root, on = this.on, lang = languageOf(path), gen = this.loads = (this.loads ?? 0) + 1;
     if (!file) return;
     // source: what the lexer reads for both sides, a fresh file's text or the whole-file diff.
     let lines, source = null;
-    if (file.fresh || (!this.from && file.status === "A")) {
+    if (!this.picked && (file.fresh || (!this.from && file.status === "A"))) {
       const text = await readTextFile(`${root}/${path}`, { on }).catch(() => null);
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
       else if (text.includes("\0")) lines = ["Binary file · no text diff"];
@@ -258,24 +297,36 @@ export default class Changes extends View {
         source = { kind: "fresh", text };
       }
     } else {
-      const diff = [...READ, "diff", ...(this.from ? [this.from] : []), "--no-ext-diff", "--no-textconv", "--no-color"];
+      const c = this.picked, diff = c ? [...HISTORY, ...treeDiff(c, c.sha, "-p")]
+        : [...READ, "diff", ...(this.from ? [this.from] : []), "--no-ext-diff", "--no-textconv", "--no-color"];
       // The same diff as one whole-file hunk gives each side's lexical state from line 1, so a hunk that starts inside
       // a comment or string colours right. Failing that, the diff draws uncoloured.
       const whole = lang ? exec("git", [...diff, "--unified=100000000", "--", path], { cwd: root, on }).catch(() => null) : null;
       const r = await exec("git", [...diff, "--", path], { cwd: root, on });
       if (r.code !== 0) throw new Error(r.stderr);
       const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
-      lines = first < 0 ? [file.binary ? "Binary file changed" : "No text diff available"] : all.slice(first);
+      lines = first < 0 ? [c ? "No text diff (binary, mode-only or submodule change)" : file.binary ? "Binary file changed" : "No text diff available"] : all.slice(first);
       const w = whole && first >= 0 && await whole;
       if (w?.code === 0) source = { kind: "diff", text: w.stdout };
     }
-    if (this.key() === context && this.open === path && gen === this.loads) this.setLines(lines.slice(0, 1500).map(line => line.length > 4000 ? line.slice(0, 4000) + CUT : line), lang && source && this.colour(source, lang));
+    const current = () => this.key() === context && this.open === path && gen === this.loads;
+    if (!current()) return;
+    const shown = lines.slice(0, 1500).map(line => line.length > 4000 ? line.slice(0, 4000) + CUT : line), cached = lang && source && this.cached(source, lang);
+    this.setLines(shown, cached);
+    // New colours are lexed in a task of their own, once this one has ended: Herdr interrupts a task after 500 ms, and
+    // an interrupted refresh would never clear `loading`.
+    if (lang && source && !cached) cx.timer.after(0, (cx) => { if (current()) { this.setLines(shown, this.colour(source, lang)); cx.notify(); } });
   }
 
   // Lexing is the slow part of a load, and a refresh mostly reloads the same file unchanged.
-  colour({ kind, text }, lang) {
+  cached({ kind, text }, lang) {
     const c = this.coloured;
-    if (c?.lang === lang && c.kind === kind && c.text === text) return c.sides;
+    return c?.lang === lang && c.kind === kind && c.text === text ? c.sides : null;
+  }
+
+  colour({ kind, text }, lang) {
+    const c = this.cached({ kind, text }, lang);
+    if (c) return c;
     const sides = kind === "fresh" ? { old: [], new: text.replace(/\n$/, "").split("\n") } : wholeSides(text);
     this.coloured = { lang, kind, text, sides: colourSides(sides, lang) };
     return this.coloured.sides;
@@ -296,7 +347,7 @@ export default class Changes extends View {
     this.closed = !this.open;
     const context = this.context;
     if (this.open) cx.spawn(async (cx) => {
-      try { await this.load(path, context); }
+      try { await this.load(path, context, cx); }
       catch (e) { if (this.key() === context && this.open === path) this.note = `Cannot preview this diff (too large or unreadable): ${e}`; }
       cx.notify();
     });
@@ -354,7 +405,7 @@ export default class Changes extends View {
   openFind(cx) {
     this.finding = true; this.findLanded = false; this.findPlace = this.placeKey(); this.findInput.focus();
     const at = here();
-    cx.timer.after(600, () => { if (this.finding && !this.findLanded && here() === at && panelShown("changes")) this.findInput.focus(); });
+    cx.timer.after(600, () => { if (this.finding && !this.findLanded && here() === at && panelShown(this.panel)) this.findInput.focus(); });
   }
 
   // Escape gives the keyboard back to the pane it came from.
@@ -373,7 +424,7 @@ export default class Changes extends View {
   }
 
   commit(cx) {
-    if (!this.message.trim() || !this.root || this.busy || this.loading || this.context !== this.key()) return;
+    if (this.source || !this.message.trim() || !this.root || this.busy || this.loading || this.context !== this.key()) return;
     const root = this.root, on = this.on, context = this.context, message = this.message.trim();
     this.busy = true; this.note = null;
     cx.spawn(async (cx) => {
@@ -451,12 +502,24 @@ export default class Changes extends View {
         .child(this.headerButton("changes-fetch", "mods/my-changes/fetch.svg", false, this.fetching ? "Fetching…" : "Fetch origin", (cx) => this.fetchBase(cx), t, this.fetching)));
   }
 
+  // The picked commit, in the scope bar's place: what the diff below compares.
+  commitLine(t) {
+    const c = this.picked, against = !c ? "" : !c.parent ? "root commit" : c.merge ? "vs first parent" : "";
+    return h_flex().id("commit-line").h(z(34)).flex_none().px(10).gap(6).items_center().border_b(1).border_color(t.border).text_size(z(11)).text_color(t.muted)
+      .when(Boolean(c), (e) => e.tooltip(`${c.sha}\n${c.subject}\n${c.author} · ${c.date}`)
+        .child(div().flex_none().text_color(t.dim).child(c.sha.slice(0, 7)))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(c.subject))
+        .when(Boolean(against), (e) => e.child(div().flex_none().px(5).rounded(4).border_1().border_color(t.border).text_color(t.dim).child(against)))
+        .child(div().flex_none().max_w(100).truncate().child(c.author)))
+      .when(!c, (e) => e.child(div().text_color(t.dim).child("Pick a commit above")));
+  }
+
   render(cx) {
     scale = panelScale();
     if (this.key() !== this.context) this.refresh(cx);
     // A row belongs to the place it opened for; a scope switch keeps it.
     if (this.finding && this.findPlace !== this.placeKey()) this.closeFind();
-    const request = !this.pinned && findRequest("changes");
+    const request = !this.pinned && findRequest(this.panel);
     if (request && request.id !== this.findId) {
       this.findId = request.id; this.openFind(cx);
       setShared("panel.find", null);
@@ -466,7 +529,7 @@ export default class Changes extends View {
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     this.changed = CHANGED[darkColour(t.background) ? "dark" : "light"];
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
-    const nothing = this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
+    const nothing = this.source ? (this.picked ? "No changes in this commit" : "No commit picked") : this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
     const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t)] : [this.rows, (r, t) => this.diffRow(r, t)];
     const list = v_virtual_list("changes-diff", items.length, this.mono.row, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full();
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13)).track_focus(this.handle)
@@ -475,12 +538,12 @@ export default class Changes extends View {
         if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
       })
       .child(h_flex().h(z(42)).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-        .child(div().font_semibold().child("Changes"))
+        .child(div().font_semibold().child(this.source ? "Commit" : "Changes"))
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(z(10)).text_color(t.muted).child(this.query ? `${shown.length} of ${this.files.length} files` : `${this.files.length} files`))
         .child(div().flex_1()).child(div().text_size(z(11)).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(z(11)).text_color(t.ansi1).child(`−${del}`))
         .child(this.headerButton("changes-split", "mods/my-changes/columns.svg", this.split, this.split ? "Unified view" : "Side-by-side view", (cx) => this.toggleSplit(cx), t))
-        .when(!this.pinned, (e) => e.child(this.headerButton("changes-pane", "mods/my-changes/open-pane.svg", false, "Open in a pane", () => this.openPane(), t))))
-      .child(this.scopeBar(t))
+        .when(!this.pinned && !this.source, (e) => e.child(this.headerButton("changes-pane", "mods/my-changes/open-pane.svg", false, "Open in a pane", () => this.openPane(), t))))
+      .child(this.source ? this.commitLine(t) : this.scopeBar(t))
       .when(Boolean(this.finding), (e) => e.child(this.findRow(t, this.query ? `${shown.length} found` : "")))
       .child(v_flex().id("changes-body").flex_1().min_h(0).relative()
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
@@ -499,8 +562,8 @@ export default class Changes extends View {
       .when(Boolean(this.drag), (e) => e.child(div().id("changes-drag").absolute().inset_0().cursor_row_resize()
         .on_mouse_move((ev, cx) => this.dragTo(ev, cx)).on_mouse_up("left", (_ev, cx) => this.endDrag(cx)).on_hover((inside, cx) => { if (!inside) this.endDrag(cx); }))))
       .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(z(11)).text_color(t.ansi1).child(this.note)))
-      .child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
+      .when(!this.source, (e) => e.child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
         .child(div().id("commit-message").flex_1().min_w(0).h(z(32)).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(z(12)).text_color(t.foreground)))
-        .child(div().id("commit").h(z(32)).px(14).flex().items_center().rounded(8).bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).text_size(z(12)).when(enabled, (e) => e.cursor_pointer()).on_click((_e, cx) => this.commit(cx)).child(this.busy ? "Committing…" : "Commit")));
+        .child(div().id("commit").h(z(32)).px(14).flex().items_center().rounded(8).bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).text_size(z(12)).when(enabled, (e) => e.cursor_pointer()).on_click((_e, cx) => this.commit(cx)).child(this.busy ? "Committing…" : "Commit"))));
   }
 }

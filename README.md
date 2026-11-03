@@ -10,26 +10,36 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
 - `mods/my-changes`: Herdr's Changes panel plus a side-by-side diff view, an open-in-a-pane button, a branch scope
   (changes vs the default branch, with fetch), changed files as a folder tree like Files (flat matches while finding)
   resizable in eighths, and C/C++, Python, Markdown and reST diffs coloured by `syntax.js`, a line lexer (not a
-  parser). Tests: `node --no-warnings --test mods/my-changes/*.test.mjs`.
+  parser), which stops colouring after 250 ms, since Herdr interrupts a script task after 500 ms. Tests: `node
+  --no-warnings --test mods/my-changes/*.test.mjs`. With props `{source: "git", panel: "git"}` it is the Git panel's
+  lower half: my-git's picked commit, read-only, against its first parent (a root commit against nothing), with its
+  own view and text size settings.
+- `mods/my-git`: the Git panel's upper half, read-only: the focused repo's branches (current checkout, local,
+  remote-tracking; no fetch) and a branch's commits, 100 a page from the tip as it was when listed. The picked commit
+  goes to the my-changes block below through shared `git.selection`. Polls refs every 10 s while shown; a moved branch
+  reloads the first page, or offers Reload once more pages are loaded. Reads never fetch a partial clone's missing
+  objects (`--no-lazy-fetch`; a Git without it shows an error). Tests: `node --no-warnings --test
+  mods/my-git/git.test.mjs`.
 - `mods/my-files`: Herdr's Files panel showing the tree and a file preview together, with the tree on any side and
   resizable in eighths. Markdown and reST previews are coloured by its copy of `syntax.js` (kept identical to
   my-changes', checked by the test); they are read-only lines without text selection. Other files use Herdr's editor.
 - `keys.json` (`layout:my-main`): `ctrl-shift-f` opens the side panel's find row (its shown panel, else Files):
   Files finds a path in the whole repo (tracked and untracked, not ignored; outside a repo, the loaded folders),
-  Changes filters changed files, Issues and PRs find a loaded number or title (Enter on a number opens it even when
-  it isn't loaded). Enter opens the first match, Escape closes the row and returns to the terminal.
+  Changes and Git filter changed files, Issues and PRs find a loaded number or title (Enter on a number opens it even
+  when it isn't loaded). Enter opens the first match, Escape closes the row and returns to the terminal.
 - `mods/my-panel-snap`: snaps the right side panel to the nearest eighth of the work area when a drag ends.
 - `mods/my-github`: Issues and PRs panels for the focused repo through `gh` on the repo's machine: list, filter,
   search, detail with comments and PR checks below a list resizable in eighths, comment, close/reopen behind a
   confirm. Only the `upstream` and `origin` remotes count, never other forks: the one picked in the panel, else
   `gh repo set-default`'s, else `upstream`, else `origin`; github.com only. Helper tests:
   `node --no-warnings --test mods/my-github/github.test.mjs`.
-- `mods/my-tabs`: Herdr's tab bar plus Issues and PRs buttons for the side panel, and while it is open, A−/A+ for the
-  shown panel's text size (shared `panel.text_size.<files|changes|issues|prs>`, 10–20 px at zoom 1, default 13): each
-  panel scales its text and rows from its own. Herdr's Settings screen can't take extra rows (`frame/` is rewritten on
-  every start).
+- `mods/my-tabs`: Herdr's tab bar plus Issues, PRs and Git buttons for the side panel, and while it is open, A−/A+ for
+  the shown panel's text size (shared `panel.text_size.<files|changes|issues|prs|git>`, 10–20 px at zoom 1, default
+  13): each panel scales its text and rows from its own. Herdr's Settings screen can't take extra rows (`frame/` is
+  rewritten on every start).
 - `layouts/my-main.json`: Herdr's `main` layout with its tab bar, agents list and Files and Changes panels pointed at
-  `my-tabs`, `my-agents`, `my-files` and `my-changes`, Issues and PRs panels from `my-github`, a side panel sized by
+  `my-tabs`, `my-agents`, `my-files` and `my-changes`, Issues and PRs panels from `my-github`, a Git panel (`my-git`
+  over `my-changes`, 3:5, resizable), a side panel sized by
   share (default 3/8, no fixed pixel maximum) and `my-panel-snap` in it. The Files and Changes blocks' prop
   `code_font_size` (13, the panels' list size) sizes the diff and file preview text, in the terminal's font, at the
   default panel text size; without it they use the terminal's size.

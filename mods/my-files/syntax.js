@@ -154,15 +154,23 @@ function lexPython(line, state) {
 
 const LEXERS = { c: lexC(false), cpp: lexC(true), python: lexPython };
 
-// Inline markup shared by Markdown and reST: each rule is [regex at the start, category].
+// highlightLines' deadline (ms since the epoch) and whether lexing reached it.
+let until = Infinity, expired = false;
+
+// Inline markup shared by Markdown and reST: each rule is [regex at the start, category], tried only at `rules.starts`,
+// the characters a rule can begin with. A line of unclosed delimiters still rescans its rest at each one, so past the
+// deadline the rest of the line stays plain.
 function inline(r, text, rules) {
   let plain = "";
-  for (let i = 0; i < text.length;) {
-    const rest = text.slice(i), boundary = !/[\w\\]/.test(text[i - 1] ?? "");
+  for (let i = 0, steps = 0; i < text.length; steps++) {
+    if (steps % 64 === 0 && Date.now() > until) { expired = true; plain += text.slice(i); break; }
     let hit = null;
-    for (const [re, category, needsBoundary] of rules) {
-      const m = (!needsBoundary || boundary) && re.exec(rest);
-      if (m) { hit = [m[0], category]; break; }
+    if (rules.starts.includes(text[i])) {
+      const rest = text.slice(i), boundary = !/[\w\\]/.test(text[i - 1] ?? "");
+      for (const [re, category, needsBoundary] of rules) {
+        const m = (!needsBoundary || boundary) && re.exec(rest);
+        if (m) { hit = [m[0], category]; break; }
+      }
     }
     if (hit) { r.add(plain); plain = ""; r.add(hit[0], hit[1]); i += hit[0].length; }
     else { plain += text[i]; i++; }
@@ -179,6 +187,7 @@ const MD_INLINE = [
   [/^(\*\*|__)(?=\S)[\s\S]*?\S\1/, "emphasis", true],
   [/^([*_])(?=[^\s*_])[\s\S]*?[^\s\\]\1(?!\w)/, "emphasis", true],
 ];
+MD_INLINE.starts = "`<![*_";
 
 // A known fence or code-block label -> its lexer's language.
 const labelled = (label) => { const lang = LABEL[label?.toLowerCase()]; return LEXERS[lang] ? lang : null; };
@@ -232,6 +241,7 @@ const RST_INLINE = [
   [/^\*(?=[^\s*])[\s\S]*?[^\s\\]\*(?!\w)/, "emphasis", true],
   [/^https?:\/\/[^\s<>`]+[^\s<>`.,;:!?)]/, "link", true],
 ];
+RST_INLINE.starts = "`:|[*h";
 const ADORNMENT = /^([!-/:-@[-`{-~])\1{2,}\s*$/;
 const CODE = /^(?:code-block|code|sourcecode|highlight)$/;
 const indentOf = (line) => /^\s*/.exec(line)[0].length;
@@ -282,13 +292,15 @@ const MAX_RUNS = 256, LONG = 4000;
 // Runs for each line, carrying multi-line state from the first line. Lines past `budget` characters (newlines
 // counted) get null, as do a line over LONG characters and those after it. On the UI thread, Herdr's engine lexes
 // ordinary C at about 1,000 characters a millisecond; adversarial markup is slower. Joining a line's runs gives the line back; at most 255 coloured runs, then one plain rest.
-export function highlightLines(lang, lines, budget = 200000) {
+// Lines once `deadline` passes get null too: Herdr interrupts a script task after 500 ms, leaving its work unfinished.
+export function highlightLines(lang, lines, budget = 200000, deadline = Date.now() + 250) {
   const lex = LINES[lang];
   if (!lex) return lines.map(() => null);
   let state = null, used = 0;
+  until = deadline; expired = false;
   return lines.map((line, i) => {
     used += line.length > LONG ? Infinity : line.length + 1;
-    if (used > budget) return null;
+    if (used > budget || expired || Date.now() > deadline) { expired = true; return null; }
     let out;
     [out, state] = lex(line, state, lines[i + 1]);
     if (out.length > MAX_RUNS) out = [...out.slice(0, MAX_RUNS - 1), [out.slice(MAX_RUNS - 1).map(([text]) => text).join(""), null]];

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { highlightLines, languageOf } from "./syntax.js";
-import { diffRows, splitRows, wholeSides, colourSides, paint, CUT } from "./diff.js";
+import { diffRows, splitRows, wholeSides, colourSides, paint, CUT, parseNumstat, parseNameStatus } from "./diff.js";
 
 // Each line as "text" with coloured pieces written [category:text].
 const marked = (lang, text) => highlightLines(lang, text.split("\n")).map((runs) => runs.map(([t, c]) => (c ? `[${c}:${t}]` : t)).join(""));
@@ -106,6 +106,27 @@ test("splitRows keeps both sides' rows", () => {
   const pairs = splitRows(diffRows(["@@ -1,2 +1,2 @@", " a", "-b", "+c"]));
   assert.equal(pairs[1].left, pairs[1].right);
   assert.deepEqual([pairs[2].left.raw, pairs[2].right.raw], ["b", "c"]);
+});
+
+test("highlightLines stops at its deadline: a line keeps its text, later lines get null", () => {
+  assert.deepEqual(highlightLines("markdown", ["a *b*", "c"], undefined, 0), [null, null]);
+  const now = Date.now, line = "x " + "[".repeat(300);
+  let calls = 0;
+  // The per-line check and two of inline()'s pass; the deadline passes at the third, mid-line.
+  Date.now = () => (++calls > 3 ? 100 : 0);
+  try {
+    const [first, second] = highlightLines("markdown", [line, "*b*"], undefined, 50);
+    assert.equal(first.map(([text]) => text).join(""), line);
+    assert.equal(first.at(-1)[1], null);
+    assert.equal(second, null);
+  } finally { Date.now = now; }
+});
+
+test("parseNumstat sums outputs and keeps tabs in paths; parseNameStatus maps statuses", () => {
+  const staged = ["1\t2\ta\tb.c", "-\t-\tlogo.png", ""].join("\0"), unstaged = ["3\t0\ta\tb.c", ""].join("\0");
+  assert.deepEqual(parseNumstat([staged, unstaged]), { "a\tb.c": { add: 4, del: 2, binary: false }, "logo.png": { add: 0, del: 0, binary: true } });
+  assert.deepEqual(parseNameStatus(["A", "new file", "D", "gone", "T", "typed", "U", "both", ""].join("\0")).map((f) => [f.path, f.status]),
+    [["new file", "A"], ["gone", "D"], ["typed", "M"], ["both", "U"]]);
 });
 
 test("a no-newline marker is tinted as the change it follows, never after context", () => {
