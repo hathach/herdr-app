@@ -1,7 +1,7 @@
 // Modified from Herdr's shipped `changes` mod (Apache-2.0): side-by-side view, open in a pane, branch scope.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { diffRows, splitRows, wholeSides, colourSides, paint, parseNumstat, parseNameStatus, CUT } from "./diff.js";
+import { diffRows, splitRows, wholeSides, colourSides, paint, diffView, revealFor, fullRows, hunkEnd, cutLine, parseNumstat, parseNameStatus } from "./diff.js";
 import { languageOf, COLORS } from "./syntax.js";
 import { sizedPart, panelSize, partPx, scaler, codeMetrics, PILL_SLOT } from "./part-size.js";
 import { fileTree, treeRows } from "./tree.js";
@@ -278,8 +278,9 @@ export default class Changes extends View {
     // Only the newest load publishes: a refresh can start another load of the same file before this one ends.
     const file = this.files.find((f) => f.path === path), root = this.root, on = this.on, lang = languageOf(path), gen = this.loads = (this.loads ?? 0) + 1;
     if (!file) return;
-    // source: what the lexer reads for both sides, a fresh file's text or the whole-file diff.
-    let lines, source = null;
+    // source: what the lexer reads for both sides, a fresh file's text or the whole-file diff; full: that diff's rows,
+    // for revealing unchanged lines around the changes.
+    let lines, source = null, full = null;
     if (!this.picked && (file.fresh || (!this.from && file.status === "A"))) {
       const text = await readTextFile(`${root}/${path}`, { on }).catch(() => null);
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
@@ -293,22 +294,38 @@ export default class Changes extends View {
       const c = this.picked, diff = c ? [...HISTORY, ...treeDiff(c, c.sha, "-p")]
         : [...READ, "diff", ...(this.from ? [this.from] : []), "--no-ext-diff", "--no-textconv", "--no-color"];
       // The same diff as one whole-file hunk gives each side's lexical state from line 1, so a hunk that starts inside
-      // a comment or string colours right. Failing that, the diff draws uncoloured.
-      const whole = lang ? exec("git", [...diff, "--unified=100000000", "--", path], { cwd: root, on }).catch(() => null) : null;
+      // a comment or string colours right, and holds the unchanged lines to reveal. Failing that, the diff draws
+      // uncoloured and without them. A file without a language fetches it only when it may be short enough to reveal.
+      const fetchWhole = () => exec("git", [...diff, "--unified=100000000", "--", path], { cwd: root, on }).catch(() => null);
+      const whole = lang ? fetchWhole() : null;
       const r = await exec("git", [...diff, "--", path], { cwd: root, on });
       if (r.code !== 0) throw new Error(r.stderr);
       const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
       lines = first < 0 ? [c ? "No text diff (binary, mode-only or submodule change)" : file.binary ? "Binary file changed" : "No text diff available"] : all.slice(first);
-      const w = whole && first >= 0 && await whole;
-      if (w?.code === 0) source = { kind: "diff", text: w.stdout };
+      const w = first >= 0 && await (whole ?? (hunkEnd(lines) <= 20000 ? fetchWhole() : null));
+      if (w?.code === 0) {
+        if (lang) source = { kind: "diff", text: w.stdout };
+        // A refresh mostly finds the same diff: its rows, painted, are kept.
+        if (this.fullMemo?.text !== w.stdout) this.fullMemo = { text: w.stdout, rows: fullRows(w.stdout) };
+        full = this.fullMemo.rows;
+      }
     }
     const current = () => this.key() === context && this.open === path && gen === this.loads;
     if (!current()) return;
-    const shown = lines.slice(0, 1500).map(line => line.length > 4000 ? line.slice(0, 4000) + CUT : line), cached = lang && source && this.cached(source, lang);
-    this.setLines(shown, cached);
+    const cached = lang && source && this.cached(source, lang);
+    if (this.revealOf !== `${context}|${path}`) { this.revealOf = `${context}|${path}`; this.reveal = new Map(); this.revealTag = (this.revealTag ?? 0) + 1; }
+    const shown = lines.slice(0, 1500).map(cutLine);
+    if (lines.length > 1500) shown.push("… showing the first 1,500 diff lines");
+    if (full) this.showFull(full, cached); else this.setLines(shown, cached);
     // New colours are lexed in a task of their own, once this one has ended: Herdr interrupts a task after 500 ms, and
-    // an interrupted refresh would never clear `loading`.
-    if (lang && source && !cached) cx.timer.after(0, (cx) => { if (current()) { this.setLines(shown, this.colour(source, lang)); cx.notify(); } });
+    // an interrupted refresh would never clear `loading`. The whole diff's rows are the ones on screen, whatever was
+    // revealed since, so painting them is enough.
+    if (lang && source && !cached) cx.timer.after(0, (cx) => {
+      if (!current()) return;
+      const sides = this.colour(source, lang);
+      if (full) paint(full, sides); else this.setLines(shown, sides);
+      cx.notify();
+    });
   }
 
   // Lexing is the slow part of a load, and a refresh mostly reloads the same file unchanged.
@@ -326,14 +343,33 @@ export default class Changes extends View {
   }
 
   setLines(lines, coloured) {
-    this.rows = diffRows(lines);
-    if (coloured) paint(this.rows, coloured);
-    this.pairs = splitRows(this.rows);
-    this.diffChars = lines.reduce((n, line) => Math.max(n, line.length), 0);
+    this.full = null;
+    this.setRows(diffRows(lines), coloured);
+  }
+
+  // The whole-file diff's rows, shown as the reveals open them; `rows` are kept painted for the reveals to come.
+  showFull(rows, coloured) {
+    this.full = rows;
+    if (coloured) paint(rows, coloured);
+    this.setRows(diffView(rows, this.reveal, `${this.revealTag}:`).rows);
+  }
+
+  setRows(rows, coloured) {
+    if (coloured) paint(rows, coloured);
+    this.rows = rows; this.pairs = splitRows(rows);
+    this.diffChars = rows.reduce((n, row) => Math.max(n, row.text.length), 0);
+  }
+
+  expand(key, cx) {
+    const row = this.full && this.rows.find((r) => r.key === key), next = revealFor(row, this.reveal);
+    if (!next) return;
+    this.reveal.set(row.gap, next);
+    this.showFull(this.full);
+    cx.notify();
   }
 
   pick(path, cx) {
-    this.open = this.open === path ? null : path; this.setLines([]); this.note = null;
+    this.open = this.open === path ? null : path; this.setLines([]); this.note = null; this.revealOf = null;
     // Picked from find results: its folders open, so it shows in the tree once find closes.
     const collapsed = this.collapsedHere();
     for (let at = path.indexOf("/"); at >= 0; at = path.indexOf("/", at + 1)) collapsed.delete(path.slice(0, at));
@@ -447,7 +483,11 @@ export default class Changes extends View {
   }
 
   diffRow(row, t, mono) {
-    if (row.kind === "@") return div().w_full().px(12).h(mono.row).flex_none().truncate().bg(t.raised).text_color(t.dim).child(row.text);
+    // A header above hidden lines, and the row after a change above them, reveal them when clicked (`expand`).
+    if (row.kind === "@" || row.kind === "more") {
+      const action = Boolean(row.dir);
+      return div().w_full().px(12).h(mono.row).flex_none().truncate().bg(t.raised).text_color(action ? t.accent : t.dim).when(action, (e) => e.cursor_pointer()).child(row.text);
+    }
     const old = row.kind === "-";
     return this.lineCell(row, old ? row.old : row.new, t, old ? row.oldRuns : row.newRuns, mono).w_full().h(mono.row).flex_none();
   }
@@ -543,7 +583,8 @@ export default class Changes extends View {
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     const nothing = this.source ? (this.picked ? "No changes in this commit" : "No commit picked") : this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
     const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t, mono)] : [this.rows, (r, t) => this.diffRow(r, t, mono)];
-    const list = v_virtual_list("changes-diff", items.length, mono.row, (i) => String(i), (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full();
+    const list = v_virtual_list("changes-diff", items.length, mono.row, (i) => items[i].key, (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full()
+      .on_item_click((key, cx) => this.expand(key, cx));
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13)).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.findFocused) { this.closeFind(true); cx.stop_propagation(); cx.notify(); return; }

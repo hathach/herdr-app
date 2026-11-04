@@ -11,9 +11,11 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   (changes vs the default branch, with fetch), changed files as a folder tree like Files (flat matches while finding; a
   file's +/− counts give way when its name needs the room) resizable in twelfths, and C/C++, Python, Markdown and reST
   diffs coloured by `syntax.js`, a line lexer (not a parser), which stops colouring after 250 ms, since Herdr interrupts
-  a script task after 500 ms. Tests: `node --no-warnings --test mods/my-changes/*.test.mjs`. With props `{source: "git",
-  panel: "git"}` it is the Git panel's lower half: my-git's picked commit, read-only, against its first parent (a root
-  commit against nothing), with its own view and text size settings.
+  a script task after 500 ms. A diff opens 20 more unchanged lines a click: its hunk header for those above, a row after
+  the hunk for those below (`diffView` in `diff.js`; files up to 20,000 lines, an initial view of at most 1,500 rows).
+  Tests: `node --no-warnings --test mods/my-changes/*.test.mjs`. With props `{source: "git", panel: "git"}` it is the
+  Git panel's lower half: my-git's picked commit, read-only, against its first parent (a root commit against nothing),
+  with its own view and text size settings.
 - `mods/my-git`: the Git panel's upper half, read-only: the focused repo's branches (current checkout, local,
   remote-tracking; no fetch) and a branch's commits, 100 a page from the tip as it was when listed. The picked commit
   goes to the my-changes block below through shared `git.selection`. Polls refs every 10 s while shown; a moved branch
