@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { BASE, PART, OFFSET, baseKey, offsetKey, baseSize, offsetOf, partSize, stepOffset, wheelStep } from "./part-math.js";
 
 test("copies are identical", () => {
-  for (const [file, mods] of [["part-math.js", ["my-files", "my-git", "my-github", "my-tabs"]], ["part-size.js", ["my-files", "my-git", "my-github"]]]) {
+  for (const [file, mods] of [["part-math.js", ["my-files", "my-git", "my-github", "my-tabs"]], ["part-size.js", ["my-files", "my-git", "my-github"]], ["part-split.js", ["my-github"]]]) {
     const mine = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
     for (const mod of mods) assert.equal(readFileSync(new URL(`../${mod}/${file}`, import.meta.url), "utf8"), mine, `${mod}/${file}`);
   }

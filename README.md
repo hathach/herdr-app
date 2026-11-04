@@ -12,8 +12,8 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   resizable in twelfths, and C/C++, Python, Markdown and reST diffs coloured by `syntax.js`, a line lexer (not a
   parser), which stops colouring after 250 ms, since Herdr interrupts a script task after 500 ms. Tests: `node
   --no-warnings --test mods/my-changes/*.test.mjs`. With props `{source: "git", panel: "git"}` it is the Git panel's
-  lower half: my-git's picked commit, read-only, against its first parent (a root commit against nothing), with its
-  own view and text size settings.
+  lower half: my-git's picked commit, read-only, against its first parent (a root commit against nothing), with its own
+  view and text size settings.
 - `mods/my-git`: the Git panel's upper half, read-only: the focused repo's branches (current checkout, local,
   remote-tracking; no fetch) and a branch's commits, 100 a page from the tip as it was when listed. The picked commit
   goes to the my-changes block below through shared `git.selection`. Polls refs every 10 s while shown; a moved branch
@@ -33,6 +33,11 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   confirm. Only the `upstream` and `origin` remotes count, never other forks: the one picked in the panel, else
   `gh repo set-default`'s, else `upstream`, else `origin`; github.com only. Helper tests:
   `node --no-warnings --test mods/my-github/github.test.mjs`.
+- List sides (`part-split.js` in my-changes and my-github, identical copies; tests: `node --no-warnings --test
+  mods/my-changes/part-split.test.mjs`): like the Files tree, the Changes and Git changed-files list moves to any side
+  of its diff, and the Issues and PRs list to any side of an open item, from a header button. Each copy keeps its side
+  and a height and a width share apart (`list:<panel|pane|git|issues|prs>[:side|:across]` in its storage), so moving
+  keeps both; the Changes list's height fits its files until dragged, and the commit box stays below both.
 - `mods/my-tabs`: Herdr's tab bar plus Issues, PRs and Git buttons for the side panel, and while it is open, A−/A+ for
   the shown panel's text size (shared `panel.text_size.<files|changes|issues|prs|git>`, 10–20 px at zoom 1, default
   13): each panel scales its text and rows from its own. Herdr's Settings screen can't take extra rows (`frame/` is

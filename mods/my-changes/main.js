@@ -5,6 +5,7 @@ import { diffRows, splitRows, wholeSides, colourSides, paint, parseNumstat, pars
 import { languageOf, COLORS } from "./syntax.js";
 import { sizedPart, panelSize, partPx, scaler, codeMetrics, PILL_SLOT } from "./part-size.js";
 import { fileTree, treeRows } from "./tree.js";
+import { SIDES, nextSide, sideOf, shareKey, twelfth, shareOf, shareAt } from "./part-split.js";
 import { failure, commitBase, treeDiff } from "./commit.js";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, run, layout, shared, setShared, props } from "herdr";
 
@@ -72,9 +73,6 @@ function findPaths(list, query, path = (x) => x) {
 // columns scale from 13; icons, indents and truncation limits stay.
 let z = scaler(13);
 
-// A splitter's share lands on the nearest twelfth when its drag ends, like the side panel's.
-const twelfth = (share) => Math.min(11, Math.max(1, Math.round(share * 12))) / 12;
-
 // Changed-line [background, line number] colours: opaque and saturated, as Claude Code's diff draws them; the set
 // follows the drawn theme's background, whatever the appearance setting says.
 const CHANGED = { dark: { "-": ["#3d0100", "#dc5a5a"], "+": ["#022800", "#50c850"] }, light: { "-": ["#ffd7d5", "#b42318"], "+": ["#d3f5d1", "#1a7f37"] } };
@@ -91,7 +89,9 @@ export default class Changes extends View {
     this.splitKey = `split:${mode}`; this.scopeKey = `scope:${mode}`;
     this.split = localStorage.getItem(this.splitKey) !== "false";
     this.scope = given?.scope ?? localStorage.getItem(this.scopeKey) ?? "work";
-    this.listKey = `list:${mode}`; this.listShare = Number(localStorage.getItem(this.listKey)) || null;
+    // The list's height share (null: fits its files) and width share are kept apart, so moving it keeps both.
+    this.listKey = `list:${mode}`; this.side = sideOf(localStorage.getItem(`${this.listKey}:side`));
+    this.share = { down: shareOf(localStorage.getItem(this.listKey), null), across: shareOf(localStorage.getItem(shareKey(this.listKey, "across")), 5 / 12) };
     this.place = this.placeKey(); this.context = this.key(); this.open = given?.open ?? null;
     this.picked = null; this.files = []; this.rows = []; this.pairs = []; this.diffChars = 0; this.message = ""; this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "Commit message" });
@@ -462,18 +462,25 @@ export default class Changes extends View {
     cx.stop_propagation(); cx.notify();
   }
 
-  // The drag cover spans the list and the diff, so the pointer's height in it is the list's share.
-  dragTo(event, cx) {
-    if (!this.drag || !event.bounds) return;
-    this.listShare = Math.min(11 / 12, Math.max(1 / 12, event.local_position.y / event.bounds.height));
+  moveList(cx) {
+    this.side = nextSide(this.side);
+    localStorage.setItem(`${this.listKey}:side`, this.side);
     cx.notify();
+  }
+
+  // The drag cover spans the list and the diff, so the pointer's place in it is the list's share.
+  dragTo(event, cx) {
+    const share = this.drag && shareAt(this.side, event.local_position, event.bounds), { axis } = SIDES[this.side];
+    if (!share || share === this.share[axis]) return;
+    this.share[axis] = share; cx.notify();
   }
 
   endDrag(cx) {
     if (!this.drag) return;
     this.drag = false;
+    const { axis } = SIDES[this.side];
     // A press with no move leaves a list that still fits its files as it is.
-    if (this.listShare) { this.listShare = twelfth(this.listShare); localStorage.setItem(this.listKey, String(this.listShare)); }
+    if (this.share[axis]) { this.share[axis] = twelfth(this.share[axis]); localStorage.setItem(shareKey(this.listKey, axis), String(this.share[axis])); }
     cx.notify();
   }
 
@@ -521,6 +528,11 @@ export default class Changes extends View {
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     const diffPx = partPx(this.panel, "diff"), mono = codeMetrics(diffPx), dz = scaler(diffPx), lz = scaler(partPx(this.panel, "list")), cz = scaler(partPx(this.panel, "commit"));
     const part = (box, content, opts) => sizedPart(box, content, { ui: this.parts, panel: this.panel, t, hide: this.drag, ...opts });
+    const { direction, axis, cursor } = SIDES[this.side], across = axis === "across", share = this.share[axis];
+    const listBox = across ? v_flex().flex_none().min_h(0).h_full().w(`${share * 100}%`)
+      : v_flex().flex_none().h(share ? `${share * 100}%` : Math.min(lz(200), Math.max(44, rows.length * lz(28) + 12)));
+    const divider = across ? div().w(5).h_full().flex().justify_center().child(div().w(1).h_full().bg(t.border))
+      : div().h(5).w_full().flex().flex_col().justify_center().child(div().h(1).w_full().bg(t.border));
     // A note shows in the part it is about; one about the whole panel (a failed fetch) at the panel's size.
     const noted = (owner) => Boolean(this.note) && (this.note.part ?? null) === owner;
     const note = (size) => div().px(10).pb(8).text_size(size).text_color(t.ansi1).child(this.note.text);
@@ -538,21 +550,21 @@ export default class Changes extends View {
         .child(div().font_semibold().child(this.source ? "Commit" : "Changes"))
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(z(10)).text_color(t.muted).child(this.query ? `${shown.length} of ${this.files.length} files` : `${this.files.length} files`))
         .child(div().flex_1()).child(div().text_size(z(11)).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(z(11)).text_color(t.ansi1).child(`−${del}`))
+        .child(this.headerButton("changes-side", `mods/my-changes/panel-${this.side}.svg`, false, `List on the ${this.side} · move it`, (cx) => this.moveList(cx), t))
         .child(this.headerButton("changes-split", "mods/my-changes/columns.svg", this.split, this.split ? "Unified view" : "Side-by-side view", (cx) => this.toggleSplit(cx), t))
         .when(!this.pinned && !this.source, (e) => e.child(this.headerButton("changes-pane", "mods/my-changes/open-pane.svg", false, "Open in a pane", () => this.openPane(), t))))
       .child(this.source ? this.commitLine(t) : this.scopeBar(t))
       .when(Boolean(this.finding), (e) => e.child(this.findRow(t, this.query ? `${shown.length} found` : "")))
-      .child(v_flex().id("changes-body").flex_1().min_h(0).relative()
+      .child(div().id("changes-body").flex()[direction]().flex_1().min_h(0).relative()
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
-      .child(part(v_flex().flex_none().h(this.listShare ? `${this.listShare * 100}%` : Math.min(lz(200), Math.max(44, rows.length * lz(28) + 12))),
+      .child(part(listBox,
         v_flex().id("changes-list").size_full().overflow_y_scrollbar().p(6)
           .children(rows.map((row) => row.file ? this.fileRow(row.file, row.depth, t, lz) : this.folderRow(row, t, lz)))
           .when(!shown.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : !this.root ? "No folder" : this.files.length ? "No matching changed files" : nothing))))
           .when(this.limited, el => el.child(div().px(6).py(4).text_size(lz(11)).text_color(t.dim).child("Showing the first 1,000 changed files"))),
         { part: "list", label: this.query ? "Matches" : "Changed files" }))
-      .child(div().id("changes-divider").h(5).w_full().flex_none().flex().flex_col().justify_center().cursor_row_resize().child(div().h(1).w_full().bg(t.border))
-        .on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
-      .child(part(v_flex().flex_1().min_h(0), v_flex().flex_1().min_h(0)
+      .child(divider.id("changes-divider").flex_none()[cursor]().on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
+      .child(part(v_flex().flex_1().min_w(0).min_h(0), v_flex().flex_1().min_h(0)
         .child(div().flex_1().min_h(0).relative().font_family(mono.family).text_size(mono.size)
           // In a horizontal scroller the list keeps its last measured width, leaving the side-by-side divider off centre.
           .child(this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, this.diffChars * mono.char + mono.numbers + 30)).h_full().child(list)))
@@ -561,7 +573,7 @@ export default class Changes extends View {
         .when(noted("diff"), (e) => e.child(note(dz(11)).pt(6))),
         { part: "diff", label: "Diff", code: mono.size }))
       // While dragging, a cover keeps the pointer's moves and release even over the diff.
-      .when(Boolean(this.drag), (e) => e.child(div().id("changes-drag").absolute().inset_0().cursor_row_resize()
+      .when(Boolean(this.drag), (e) => e.child(div().id("changes-drag").absolute().inset_0()[cursor]()
         .on_mouse_move((ev, cx) => this.dragTo(ev, cx)).on_mouse_up("left", (_ev, cx) => this.endDrag(cx)).on_hover((inside, cx) => { if (!inside) this.endDrag(cx); }))))
       .when(noted(null), (e) => e.child(note(z(11)).pt(6)))
       .when(!this.source, (e) => e.child(part(v_flex().flex_none().border_t(1).border_color(t.border), v_flex()

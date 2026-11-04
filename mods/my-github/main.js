@@ -4,6 +4,7 @@ import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } 
 import { spaces, panes, focused, exec, layout, theme, props, shared, setShared, run } from "herdr";
 import { parseRemotes, pickRepo, ghFailure, classifyRejection, parseChecks, BUCKETS, ago, since, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
 import { sizedPart, panelSize, partPx, scaler, PILL_SLOT } from "./part-size.js";
+import { SIDES, nextSide, sideOf, shareKey, twelfth, shareOf, shareAt } from "./part-split.js";
 
 const POLL = 60000, BACKOFF = 300000, LIMIT = 100, REPOS = "my-github.repos";
 const ISSUE = "number,title,state,author,labels,updatedAt,url", PR = `${ISSUE},isDraft,headRefName,baseRefName,reviewDecision`;
@@ -48,9 +49,6 @@ function findRequest(panel, shown) {
   return r?.panel === panel && Date.now() - r.at < 2000 && `${r.space}|${r.tab}` === here() && shown ? r : null;
 }
 
-// A splitter's share lands on the nearest twelfth when its drag ends, like the side panel's.
-const twelfth = (share) => Math.min(11, Math.max(1, Math.round(share * 12))) / 12;
-
 const slot = (where) => `${where.on ?? ""}|${where.root}`;
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
 
@@ -62,8 +60,9 @@ export default class GitHub extends View {
     const filter = localStorage.getItem(this.filterKey);
     this.filter = this.k.filters.includes(filter) ? filter : "open";
     this.listKey = `list:${this.kind}`;
-    const saved = Number(localStorage.getItem(this.listKey));
-    this.listShare = Number.isFinite(saved) && saved >= 1 / 12 && saved <= 11 / 12 ? twelfth(saved) : 5 / 12;
+    // The list's height and width shares are kept apart, so moving it keeps both.
+    this.side = sideOf(localStorage.getItem(`${this.listKey}:side`));
+    this.share = { down: shareOf(localStorage.getItem(this.listKey), 5 / 12), across: shareOf(localStorage.getItem(shareKey(this.listKey, "across")), 5 / 12) };
     this.search = ""; this.items = []; this.gen = 0; this.detailGen = 0; this.loadedAt = 0;
     this.input = InputState.new({ placeholder: "Search, GitHub syntax" });
     this.input.on("submit", (_e, cx) => { this.search = this.input.value().trim(); this.refresh(cx); });
@@ -296,17 +295,24 @@ export default class GitHub extends View {
     cx.stop_propagation(); cx.notify();
   }
 
-  // The drag cover spans the list and the detail, so the pointer's height in it is the list's share.
-  dragTo(event, cx) {
-    if (!this.drag || !event.bounds?.height) return;
-    this.listShare = Math.min(11 / 12, Math.max(1 / 12, event.local_position.y / event.bounds.height));
+  moveList(cx) {
+    this.side = nextSide(this.side);
+    localStorage.setItem(`${this.listKey}:side`, this.side);
     cx.notify();
+  }
+
+  // The drag cover spans the list and the detail, so the pointer's place in it is the list's share.
+  dragTo(event, cx) {
+    const share = this.drag && shareAt(this.side, event.local_position, event.bounds), { axis } = SIDES[this.side];
+    if (!share || share === this.share[axis]) return;
+    this.share[axis] = share; cx.notify();
   }
 
   endDrag(cx) {
     if (!this.drag) return;
-    this.drag = false; this.listShare = twelfth(this.listShare);
-    localStorage.setItem(this.listKey, String(this.listShare));
+    this.drag = false;
+    const { axis } = SIDES[this.side];
+    this.share[axis] = twelfth(this.share[axis]); localStorage.setItem(shareKey(this.listKey, axis), String(this.share[axis]));
     cx.notify();
   }
 
@@ -343,8 +349,9 @@ export default class GitHub extends View {
     return (list ?? []).slice(0, 3).map((l) => div().px(5).rounded(8).border_1().border_color(`#${l.color}`).text_color(t.muted).max_w(120).truncate().child(l.name));
   }
 
-  // One line, columns aligned across rows: dot, number, title, author, age; the rest is in the tooltip and detail.
-  row(it, t, numberWidth, z) {
+  // One line, columns aligned across rows: dot, number, title, author, age (not when slim); the rest is in the tooltip
+  // and detail.
+  row(it, t, numberWidth, z, slim) {
     const author = it.author?.login ?? "ghost", age = ago(it.updatedAt), names = (it.labels ?? []).map((l) => l.name).join(", ");
     const tip = [`#${it.number} ${it.title}`, [author, since("updated", age), it.isDraft && "draft",
       REVIEW[it.reviewDecision], names && `labels ${names}`].filter(Boolean).join(" · ")].join("\n");
@@ -353,8 +360,8 @@ export default class GitHub extends View {
       .child(div().size(7).flex_none().rounded(4).bg(this.stateColor(it, t)))
       .child(div().w(numberWidth).flex_none().truncate().text_right().text_size(z(12)).text_color(t.dim).child(`#${it.number}`))
       .child(div().flex_1().min_w(0).truncate().child(it.title))
-      .child(div().w(z(80)).flex_none().truncate().text_size(z(12)).text_color(t.muted).child(author))
-      .child(div().w(z(32)).flex_none().text_right().text_size(z(12)).text_color(t.dim).child(age));
+      .when(!slim, (e) => e.child(div().w(z(80)).flex_none().truncate().text_size(z(12)).text_color(t.muted).child(author))
+        .child(div().w(z(32)).flex_none().text_right().text_size(z(12)).text_color(t.dim).child(age)));
   }
 
   checksView(t, z) {
@@ -458,7 +465,14 @@ export default class GitHub extends View {
     // From every loaded item, so filtering keeps the title column still; 0.65 em covers a 12px UI-font digit or "#".
     const lz = scaler(partPx(this.kind, "list")), dz = scaler(partPx(this.kind, "detail"));
     const part = (box, content, opts) => sizedPart(box, content, { ui: this.parts, panel: this.kind, t, hide: this.drag, ...opts });
+    const { direction, axis, cursor } = SIDES[this.side], across = axis === "across", share = `${this.share[axis] * 100}%`;
+    const listBox = !this.selected ? v_flex().flex_1().min_w(0).min_h(0)
+      : across ? v_flex().flex_none().min_h(0).h_full().w(share) : v_flex().flex_none().min_h(0).h(share);
+    const divider = across ? div().w(5).h_full().flex().justify_center().child(div().w(1).h_full().bg(t.border))
+      : div().h(5).w_full().flex().flex_col().justify_center().child(div().h(1).w_full().bg(t.border));
     const digits = this.items.reduce((n, it) => Math.max(n, String(it.number).length), 1), numberWidth = Math.ceil((digits + 1) * lz(12) * 0.65);
+    // Author and age take about 200 px with the dot, number and gaps; a narrower list drops them to keep its titles.
+    const slimAt = lz(360), slim = this.listWidth < slimAt;
     const empty = this.loading ? "Loading…" : repo && !this.error ? `No ${this.filter === "all" ? "" : this.filter + " "}${this.k.title.toLowerCase()}` : "";
     return v_flex().id("github").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13))
       .child(h_flex().h(z(42)).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
@@ -471,6 +485,7 @@ export default class GitHub extends View {
         .when(w?.choices?.length <= 1, (e) => e.child(div().min_w(0).truncate().text_size(z(11)).text_color(t.dim).child(repo)))
         .when(Boolean(repo) && this.kind === "issues", (e) => e.child(this.button("new-issue", "mods/my-github/plus.svg", "New issue on GitHub", (cx) => cx.open_url(`https://github.com/${repo}/issues/new/choose`), t)))
         .when(Boolean(repo), (e) => e.child(this.button("open-repo", "mods/my-github/external.svg", "Open on GitHub", (cx) => cx.open_url(`https://github.com/${repo}/${this.k.path}`), t)))
+        .when(Boolean(this.selected), (e) => e.child(this.button("github-side", `mods/my-github/panel-${this.side}.svg`, `List on the ${this.side} · move it`, (cx) => this.moveList(cx), t)))
         .child(this.button("refresh", "mods/my-github/refresh.svg", "Refresh", (cx) => this.refresh(cx), t, this.loading)))
       .when(Boolean(w?.choices) && this.choosing, (e) => e.child(h_flex().flex_wrap().px(10).py(6).gap(4).border_b(1).border_color(t.border).text_size(z(11)).text_color(t.muted)
         .children(w.choices.map((c) => this.chip(`choose-${c}`, c, c === repo, (cx) => this.choose(c, cx), t)))))
@@ -480,20 +495,20 @@ export default class GitHub extends View {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(z(11)).text_color(t.foreground))))
       .when(Boolean(this.finding), (e) => e.child(this.findRow(t, this.query ? `${items.length} found` : "")))
       .when(Boolean(note), (e) => e.child(note))
-      .child(v_flex().id("github-body").flex_1().min_h(0).relative().on_mouse_up("left", (_e, cx) => this.endDrag(cx))
-      .child(part(v_flex().when(Boolean(this.selected), (e) => e.h(`${this.listShare * 100}%`).flex_none()).when(!this.selected, (e) => e.flex_1()).min_h(0),
+      .child(div().id("github-body").flex()[direction]().flex_1().min_h(0).relative().on_mouse_up("left", (_e, cx) => this.endDrag(cx))
+      .child(part(listBox,
         v_flex().id("items").size_full().overflow_y_scrollbar().p(6)
-          .children(items.map((it) => this.row(it, t, numberWidth, lz)))
+          .on_size_change((size, cx) => { this.listWidth = size.width; if (size.width < slimAt !== slim) cx.notify(); })
+          .children(items.map((it) => this.row(it, t, numberWidth, lz, slim)))
           .when(!this.items.length && Boolean(empty), (e) => e.child(div().p(8).text_color(t.dim).child(empty)))
           .when(this.items.length > 0 && !items.length, (e) => e.child(div().p(8).text_color(t.dim).child(exactNumber(this.query) ? `Not loaded: Enter opens #${exactNumber(this.query)}` : "No matching loaded items")))
           .when(this.limited, (e) => e.child(div().p(8).text_size(lz(11)).text_color(t.dim).child(`Showing the first ${LIMIT}: refine the search to see more`))),
         { part: "list", label: this.k.title }))
       .when(Boolean(this.selected), (e) => e
-        .child(div().id("github-divider").h(5).w_full().flex_none().flex().flex_col().justify_center().cursor_row_resize().child(div().h(1).w_full().bg(t.border))
-          .on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
-        .child(part(v_flex().flex_1().min_h(0), this.detailView(t, dz), { part: "detail", label: "Detail" })))
+        .child(divider.id("github-divider").flex_none()[cursor]().on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
+        .child(part(v_flex().flex_1().min_w(0).min_h(0), this.detailView(t, dz), { part: "detail", label: "Detail" })))
       // While dragging, a cover keeps the pointer's moves and release even over the detail's text and comment box.
-      .when(Boolean(this.drag), (e) => e.child(div().id("github-drag").absolute().inset_0().cursor_row_resize()
+      .when(Boolean(this.drag), (e) => e.child(div().id("github-drag").absolute().inset_0()[cursor]()
         .on_mouse_move((ev, cx) => this.dragTo(ev, cx)).on_mouse_up("left", (_ev, cx) => this.endDrag(cx)).on_hover((inside, cx) => { if (!inside) this.endDrag(cx); }))));
   }
 }
