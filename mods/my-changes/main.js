@@ -367,7 +367,7 @@ export default class Changes extends View {
   }
 
   treeRow(id, depth, t, z) {
-    return h_flex().id(id).h(z(28)).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover((s) => s.bg(t.hover));
+    return h_flex().id(id).h(z(28)).flex_none().pl(6 + depth * 12).pr(6).gap(4).items_center().rounded(7).cursor_pointer().hover((s) => s.bg(t.hover));
   }
 
   fileRow(f, depth, t, z) {
@@ -375,8 +375,11 @@ export default class Changes extends View {
     return this.treeRow(`change-file-${f.path}`, depth, t, z).when(this.open === f.path, (e) => e.bg(t.selected)).on_click((_e, cx) => this.pick(f.path, cx))
       .child(div().w(12).flex_none())
       .child(svg("mods/my-changes/file.svg").size(14).flex_none().text_color(t.muted))
-      .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(folder)).child(div().max_w(260).min_w(0).truncate().child(name)))
-      .when(f.add > 0, (e) => e.child(div().text_size(z(11)).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(z(11)).text_color(t.ansi1).child(`−${f.del}`)))
+      // The counts wrap below the clipped row when the name needs their room, and come back once it is wide enough.
+      .child(h_flex().flex_1().min_w(0).h_full().flex_wrap().content_start().overflow_hidden().gap(4)
+        .child(h_flex().flex_auto().min_w(0).max_w_full().h_full().child(div().text_color(t.dim).truncate().child(folder)).child(div().min_w(0).truncate().child(name)))
+        .child(h_flex().flex_none().h_full().gap(4).text_size(z(11))
+          .when(f.add > 0, (e) => e.child(div().text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_color(t.ansi1).child(`−${f.del}`)))))
       .child(div().w(z(10)).flex_none().text_size(z(11)).text_color(f.status === "A" ? t.ansi2 : f.status === "D" || f.status === "U" ? t.ansi1 : t.blocked).child(f.status));
   }
 
