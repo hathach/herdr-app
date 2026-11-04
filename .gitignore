@@ -7,6 +7,7 @@
 !/keys.json
 !/settings.json
 !/programs.json
+!/docs/
 !/layouts/
 /layouts/*
 !/layouts/my-*.json
