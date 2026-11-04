@@ -1,8 +1,8 @@
-// Snaps the side panel to the nearest eighth of the work area (1/8..7/8) when a drag ends.
+// Snaps the side panel to the nearest twelfth of the work area (1/12..11/12) when a drag ends.
 import { View, div } from "gpui-kit";
 import { appHome, layout, run, watchFolder } from "herdr";
 
-const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
+const twelfth = (share) => Math.min(11, Math.max(1, Math.round(share * 12))) / 12;
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -17,7 +17,7 @@ function snap() {
   const root = layout(), panel = find(root, "panel"), main = find(root, "main");
   const wp = panel?.size?.weight, wm = main?.size ? main.size.weight : 1;
   if (!panel || panel.hidden || !wp || !wm) return;
-  const share = wp / (wp + wm), target = eighth(share);
+  const share = wp / (wp + wm), target = twelfth(share);
   if (Math.abs(share - target) > 1e-3) run("layout.resize", { id: "panel", weight: wm * target / (1 - target) });
 }
 

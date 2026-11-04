@@ -72,8 +72,8 @@ function findPaths(list, query, path = (x) => x) {
 // columns scale from 13; icons, indents and truncation limits stay.
 let z = scaler(13);
 
-// A splitter's share lands on the nearest eighth when its drag ends, like the side panel's.
-const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
+// A splitter's share lands on the nearest twelfth when its drag ends, like the side panel's.
+const twelfth = (share) => Math.min(11, Math.max(1, Math.round(share * 12))) / 12;
 
 // Changed-line [background, line number] colours: opaque and saturated, as Claude Code's diff draws them; the set
 // follows the drawn theme's background, whatever the appearance setting says.
@@ -465,7 +465,7 @@ export default class Changes extends View {
   // The drag cover spans the list and the diff, so the pointer's height in it is the list's share.
   dragTo(event, cx) {
     if (!this.drag || !event.bounds) return;
-    this.listShare = Math.min(7 / 8, Math.max(1 / 8, event.local_position.y / event.bounds.height));
+    this.listShare = Math.min(11 / 12, Math.max(1 / 12, event.local_position.y / event.bounds.height));
     cx.notify();
   }
 
@@ -473,7 +473,7 @@ export default class Changes extends View {
     if (!this.drag) return;
     this.drag = false;
     // A press with no move leaves a list that still fits its files as it is.
-    if (this.listShare) { this.listShare = eighth(this.listShare); localStorage.setItem(this.listKey, String(this.listShare)); }
+    if (this.listShare) { this.listShare = twelfth(this.listShare); localStorage.setItem(this.listKey, String(this.listShare)); }
     cx.notify();
   }
 

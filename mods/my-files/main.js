@@ -18,8 +18,8 @@ const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", 
 // read-only lines instead.
 const EDITOR = { c: "c", cpp: "cpp", python: "py" }, LINES = new Set(["markdown", "rst"]);
 const PER_FOLDER = 500, TOTAL = 5000, FOUND = 200;
-// A splitter's share lands on the nearest eighth when its drag ends, like the side panel's.
-const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
+// A splitter's share lands on the nearest twelfth when its drag ends, like the side panel's.
+const twelfth = (share) => Math.min(11, Math.max(1, Math.round(share * 12))) / 12;
 // far: the tree sits at the end of the body, so its share counts back from that edge.
 const SIDES = { left: { direction: "flex_row", axis: "across" }, top: { direction: "flex_col", axis: "down" },
   right: { direction: "flex_row_reverse", axis: "across", far: true }, bottom: { direction: "flex_col_reverse", axis: "down", far: true } };
@@ -81,7 +81,7 @@ async function directory(path, on) {
 export default class Files extends View {
   init(_props, cx) {
     this.saved = new Map(); this.parts = {}; this.side = localStorage.getItem("tree"); if (!Object.keys(SIDES).includes(this.side)) this.side = "left";
-    this.share = { across: Number(localStorage.getItem("tree:across")) || 0.375, down: Number(localStorage.getItem("tree:down")) || 0.375 };
+    this.share = { across: twelfth(Number(localStorage.getItem("tree:across")) || 5 / 12), down: twelfth(Number(localStorage.getItem("tree:down")) || 5 / 12) };
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.query = ""; this.findHandle = cx.focus_handle(); this.findInput = InputState.new({ placeholder: "Find file in repo" });
     this.findInput.on("change", (_e, cx) => { this.query = this.findInput.value().trim(); cx.notify(); });
@@ -336,14 +336,14 @@ export default class Files extends View {
   dragTo(event, cx) {
     if (!this.drag || !event.bounds) return;
     const { axis, far } = SIDES[this.side], at = axis === "across" ? event.local_position.x / event.bounds.width : event.local_position.y / event.bounds.height;
-    this.share[axis] = Math.min(7 / 8, Math.max(1 / 8, far ? 1 - at : at));
+    this.share[axis] = Math.min(11 / 12, Math.max(1 / 12, far ? 1 - at : at));
     cx.notify();
   }
 
   endDrag(cx) {
     if (!this.drag) return;
     const { axis } = SIDES[this.side];
-    this.share[axis] = eighth(this.share[axis]);
+    this.share[axis] = twelfth(this.share[axis]);
     localStorage.setItem(`tree:${axis}`, String(this.share[axis]));
     this.drag = false; cx.notify();
   }

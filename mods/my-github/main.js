@@ -48,8 +48,8 @@ function findRequest(panel, shown) {
   return r?.panel === panel && Date.now() - r.at < 2000 && `${r.space}|${r.tab}` === here() && shown ? r : null;
 }
 
-// A splitter's share lands on the nearest eighth when its drag ends, like the side panel's.
-const eighth = (share) => Math.min(7, Math.max(1, Math.round(share * 8))) / 8;
+// A splitter's share lands on the nearest twelfth when its drag ends, like the side panel's.
+const twelfth = (share) => Math.min(11, Math.max(1, Math.round(share * 12))) / 12;
 
 const slot = (where) => `${where.on ?? ""}|${where.root}`;
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
@@ -63,7 +63,7 @@ export default class GitHub extends View {
     this.filter = this.k.filters.includes(filter) ? filter : "open";
     this.listKey = `list:${this.kind}`;
     const saved = Number(localStorage.getItem(this.listKey));
-    this.listShare = Number.isFinite(saved) && saved >= 1 / 8 && saved <= 7 / 8 ? eighth(saved) : 3 / 8;
+    this.listShare = Number.isFinite(saved) && saved >= 1 / 12 && saved <= 11 / 12 ? twelfth(saved) : 5 / 12;
     this.search = ""; this.items = []; this.gen = 0; this.detailGen = 0; this.loadedAt = 0;
     this.input = InputState.new({ placeholder: "Search, GitHub syntax" });
     this.input.on("submit", (_e, cx) => { this.search = this.input.value().trim(); this.refresh(cx); });
@@ -299,13 +299,13 @@ export default class GitHub extends View {
   // The drag cover spans the list and the detail, so the pointer's height in it is the list's share.
   dragTo(event, cx) {
     if (!this.drag || !event.bounds?.height) return;
-    this.listShare = Math.min(7 / 8, Math.max(1 / 8, event.local_position.y / event.bounds.height));
+    this.listShare = Math.min(11 / 12, Math.max(1 / 12, event.local_position.y / event.bounds.height));
     cx.notify();
   }
 
   endDrag(cx) {
     if (!this.drag) return;
-    this.drag = false; this.listShare = eighth(this.listShare);
+    this.drag = false; this.listShare = twelfth(this.listShare);
     localStorage.setItem(this.listKey, String(this.listShare));
     cx.notify();
   }
