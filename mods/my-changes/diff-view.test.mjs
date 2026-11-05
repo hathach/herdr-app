@@ -104,24 +104,28 @@ const patch = (body) => `diff --git a/f b/f\n--- a/f\n+++ b/f\n${body.join("\n")
 const forty = ["@@ -1,40 +1,40 @@", ...keep(1, 9), "-o10", "+n10", ...keep(11, 29), "-o30", "+n30", ...keep(31, 40)];
 
 test("fullRows takes only a whole diff within its limits", () => {
-  assert.deepEqual(shape(fullRows(patch(forty))), shape(twoChanges));
+  assert.deepEqual(shape(fullRows(patch(forty)).rows), shape(twoChanges));
   assert.equal(fullRows(patch(["@@ -5,2 +5,2 @@", " a", "-b", "+c"])), null);
   assert.equal(fullRows("not a diff"), null);
   // The header's counts turn a long file away before it is split.
   assert.equal(fullRows(patch(["@@ -1,20001 +1,20001 @@", " a"])), null);
   assert.equal(fullRows(patch(forty), 39), null);
-  assert.ok(fullRows(patch(forty), 40));
-  // Its view before any reveal is 20 rows: too long for 19, so the plain diff shows instead.
-  assert.equal(fullRows(patch(forty), 20000, 19), null);
-  assert.ok(fullRows(patch(forty), 20000, 20));
+  assert.ok(fullRows(patch(forty), 40).rows);
+  // Its view before any reveal is 20 rows: too long for 19, so the plain diff shows instead, its sides still whole.
+  const plain = fullRows(patch(forty), 20000, 19);
+  assert.equal(plain.rows, null);
+  assert.equal(plain.sides.new.length, 40);
+  assert.ok(fullRows(patch(forty), 20000, 20).rows);
+  // Rows cut a long line for display; its side keeps it whole.
   const long = fullRows(patch(["@@ -1 +1 @@", "-a", `+${"x".repeat(5000)}`]));
-  assert.ok(long[1].raw.endsWith(CUT));
+  assert.ok(long.rows[1].raw.endsWith(CUT));
+  assert.equal(long.sides.new[0].length, 5000);
 });
 
 test("a refresh to the same diff keeps what was revealed; colours arriving later keep it too", () => {
   const reveal = new Map([["14:14-26:26", { top: 13, bottom: 0 }]]);
-  const before = shape(diffView(fullRows(patch(forty)), reveal).rows);
-  const again = fullRows(patch(forty));
+  const before = shape(diffView(fullRows(patch(forty)).rows, reveal).rows);
+  const again = fullRows(patch(forty)).rows;
   assert.deepEqual(shape(diffView(again, reveal).rows), before);
   paint(again, colourSides(wholeSides(patch(forty)), "c"));
   assert.deepEqual(shape(diffView(again, reveal).rows), before);

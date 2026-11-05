@@ -5,6 +5,7 @@ import { diffRows, splitRows, wholeSides, colourSides, paint, diffView, revealFo
 import { languageOf, COLORS } from "./syntax.js";
 import { sizedPart, panelSize, partPx, scaler, codeMetrics, PILL_SLOT } from "./part-size.js";
 import { fileTree, treeRows } from "./tree.js";
+import { lineOn, selects, pickLine, nextSelection, hiddenCount, reference, selectedText, textReason, sidesMatch, lineCount } from "./selection.js";
 import { SIDES, nextSide, sideOf, shareKey, twelfth, shareOf, shareAt } from "./part-split.js";
 import { failure, commitBase, treeDiff, prBase, prFetch } from "./commit.js";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, run, layout, shared, setShared, props } from "herdr";
@@ -77,6 +78,7 @@ function findPaths(list, query, path = (x) => x) {
 // columns scale from 13; icons, indents and truncation limits stay.
 let z = scaler(13);
 
+const INDEX_ONLY = "These lines exist only in the index";
 // Changed-line [background, line number] colours: opaque and saturated, as Claude Code's diff draws them; the set
 // follows the drawn theme's background, whatever the appearance setting says.
 const CHANGED = { dark: { "-": ["#3d0100", "#dc5a5a"], "+": ["#022800", "#50c850"] }, light: { "-": ["#ffd7d5", "#b42318"], "+": ["#d3f5d1", "#1a7f37"] } };
@@ -99,6 +101,9 @@ export default class Changes extends View {
     this.share = { down: shareOf(localStorage.getItem(this.listKey), null), across: shareOf(localStorage.getItem(shareKey(this.listKey, "across")), 5 / 12) };
     this.place = this.placeKey(); this.context = this.key(); this.open = given?.open ?? null;
     this.picked = null; this.files = []; this.rows = []; this.pairs = []; this.diffChars = 0; this.message = ""; this.handle = cx.focus_handle();
+    // A line range picked in the diff, what copying it reads (`copy`, the shown content), the rows' generation (list
+    // keys carry it) and short commit ids by repo and id.
+    this.diffFocus = cx.focus_handle(); this.sel = null; this.copy = null; this.rowsGen = 0; this.shorts = new Map();
     this.input = InputState.new({ placeholder: "Commit message" });
     this.input.on("change", (_e, cx) => {
       const hadMessage = Boolean(this.message.trim());
@@ -199,7 +204,7 @@ export default class Changes extends View {
     this.again = false;
     const { cwd, on } = this.where(), context = this.key();
     if (context !== this.context) {
-      this.context = context; this.base = null; this.from = null; this.files = []; this.picked = null;
+      this.context = context; this.base = null; this.from = null; this.revs = null; this.files = []; this.picked = null;
       this.setLines([]); this.error = null; this.retry = false; this.note = null; this.closed = false; this.limited = false;
       // A scope switch keeps the repo, its watch, the commit message and the selected file.
       const place = this.placeKey();
@@ -226,7 +231,8 @@ export default class Changes extends View {
         if (status.code !== 0) throw new Error(status.stderr);
         const head = await git(["rev-parse", "--verify", "HEAD"]);
         // Branch scope diffs the working tree against where the branch left the base, as a PR's "Files changed" does.
-        let from = head.code === 0 ? "HEAD" : null, base = null;
+        // HEAD as its id, so the diff and a copied reference name the same commit while HEAD moves.
+        let from = head.code === 0 ? head.stdout.trim() : null, base = null;
         if (this.scope === "branch") {
           if (!from) throw new Error("No commits yet");
           base = this.baseCache ??= await findBase(git);
@@ -252,8 +258,10 @@ export default class Changes extends View {
           changed = [...rows.values()];
         }
         const files = statFiles(changed, stats);
+        // An unborn repo diffs the index: its old lines are in no commit (false).
+        const revs = { old: from ? await this.shortSha(git, root, from) : false, new: null };
         if (this.key() !== context) return;
-        this.root = root; this.on = on; this.from = from; this.base = base; this.files = files; this.limited = changed.length > 1000; this.error = null;
+        this.root = root; this.on = on; this.from = from; this.revs = revs; this.base = base; this.files = files; this.limited = changed.length > 1000; this.error = null;
         this.watch(root, cx);
         await this.showFiles(context, cx, () => "Cannot preview this diff (too large or unreadable)");
       } catch (e) { if (this.key() === context) { this.error = String(e); this.retry = true; } }
@@ -282,7 +290,7 @@ export default class Changes extends View {
   async loadCommit(root, on, context, cx) {
     const pick = shared(this.selection), commit = pick?.on === on && pick?.root === root ? pick : null, pr = this.source === "pr";
     const git = (args) => exec("git", [...HISTORY, ...args], { cwd: root, on });
-    let files = [], changed = [], base = null;
+    let files = [], changed = [], base = null, revs = null;
     try {
       if (commit) base = pr ? await prBase(git, commit.sha, commit.base) : await commitBase(git, commit.sha, commit.parents);
       if (base && !base.unavailable) {
@@ -291,12 +299,16 @@ export default class Changes extends View {
         for (const r of [names, numbers]) if (r.code !== 0) throw failure(r);
         changed = parseNameStatus(names.stdout); files = statFiles(changed, parseNumstat([numbers.stdout]));
       }
+      if (files.length) {
+        const [old, now] = await Promise.all([base.parent && this.shortSha(git, root, base.parent), this.shortSha(git, root, commit.sha)]);
+        revs = { old, new: now };
+      }
     } catch (e) { throw new Error(`Preview unavailable: ${e.message ?? e}`); }
     if (this.key() !== context) return;
     // A pull request's missing tips can arrive from a fetch elsewhere; its other reasons last until it changes.
     const tips = base?.missing?.map((s) => `${s === commit.sha ? "head" : "base"} ${s.slice(0, 7)}`).join(" and ");
     this.retry = Boolean(tips);
-    this.root = root; this.on = on; this.picked = commit && { ...commit, ...base, tips }; this.files = files; this.limited = changed.length > 1000;
+    this.root = root; this.on = on; this.picked = commit && { ...commit, ...base, tips }; this.revs = revs; this.files = files; this.limited = changed.length > 1000;
     this.error = !base?.unavailable ? null : !pr ? `Parent object unavailable: ${base.parent.slice(0, 7)} is not in this clone`
       : tips ? `Pull request ${tips} ${base.unavailable}${commit.fetchUrl ? ": Fetch it above" : ""}` : `Comparison unavailable: ${base.unavailable}`;
     await this.showFiles(context, cx, (e) => `Preview unavailable: ${e.message ?? e}`);
@@ -308,12 +320,14 @@ export default class Changes extends View {
     if (!file) return;
     // source: what the lexer reads for both sides, a fresh file's text or the whole-file diff; full: that diff's rows,
     // for revealing unchanged lines around the changes.
-    let lines, source = null, full = null;
+    // sides: each side's whole original lines, for copying; snapshot: the content a selection belongs to.
+    let lines, source = null, full = null, sides = null, snapshot;
     if (!this.picked && (file.fresh || (!this.from && file.status === "A"))) {
       const text = await readTextFile(`${root}/${path}`, { on }).catch(() => null);
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
       else if (text.includes("\0")) lines = ["Binary file · no text diff"];
       else {
+        snapshot = text; sides = { old: null, new: text.replace(/\n$/, "").split("\n") };
         file.add = countLines(text);
         lines = [`@@ -0,0 +1,${file.add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, 1500).map(l => `+${l}`)];
         source = { kind: "fresh", text };
@@ -334,9 +348,13 @@ export default class Changes extends View {
       if (w?.code === 0) {
         if (lang) source = { kind: "diff", text: w.stdout };
         // A refresh mostly finds the same diff: its rows, painted, are kept.
-        if (this.fullMemo?.text !== w.stdout) this.fullMemo = { text: w.stdout, rows: fullRows(w.stdout) };
-        full = this.fullMemo.rows;
+        if (this.fullMemo?.text !== w.stdout) this.fullMemo = { text: w.stdout, ...fullRows(w.stdout) };
+        full = this.fullMemo.rows; sides = this.fullMemo.sides ?? null;
       }
+      // The compact diff shows when the whole one has no rows: both reads then make the content, and the whole one's
+      // sides count only where every shown line agrees with them.
+      snapshot = full ? this.fullMemo.text : `${r.stdout}\0${w?.code === 0 ? w.stdout : ""}`;
+      if (!full && sides && !sidesMatch(diffRows(lines.slice(0, 1500)), sides)) sides = null;
     }
     const current = () => this.key() === context && this.open === path && gen === this.loads;
     if (!current()) return;
@@ -344,14 +362,16 @@ export default class Changes extends View {
     if (this.revealOf !== `${context}|${path}`) { this.revealOf = `${context}|${path}`; this.reveal = new Map(); this.revealTag = (this.revealTag ?? 0) + 1; }
     const shown = lines.slice(0, 1500).map(cutLine);
     if (lines.length > 1500) shown.push("… showing the first 1,500 diff lines");
+    const prev = this.copy;
     if (full) this.showFull(full, cached); else this.setLines(shown, cached);
+    this.setCopy(prev, path, snapshot ?? lines.join("\n"), sides);
     // New colours are lexed in a task of their own, once this one has ended: Herdr interrupts a task after 500 ms, and
     // an interrupted refresh would never clear `loading`. The whole diff's rows are the ones on screen, whatever was
     // revealed since, so painting them is enough.
     if (lang && source && !cached) cx.timer.after(0, (cx) => {
       if (!current()) return;
-      const sides = this.colour(source, lang);
-      if (full) paint(full, sides); else this.setLines(shown, sides);
+      const colours = this.colour(source, lang);
+      paint(full ?? this.rows, colours);
       cx.notify();
     });
   }
@@ -365,13 +385,14 @@ export default class Changes extends View {
   colour({ kind, text }, lang) {
     const c = this.cached({ kind, text }, lang);
     if (c) return c;
-    const sides = kind === "fresh" ? { old: [], new: text.replace(/\n$/, "").split("\n") } : wholeSides(text);
+    const memo = this.fullMemo?.text === text && this.fullMemo.sides;
+    const sides = kind === "fresh" ? { old: [], new: text.replace(/\n$/, "").split("\n") } : memo || wholeSides(text);
     this.coloured = { lang, kind, text, sides: colourSides(sides, lang) };
     return this.coloured.sides;
   }
 
   setLines(lines, coloured) {
-    this.full = null;
+    this.full = null; this.copy = null;
     this.setRows(diffRows(lines), coloured);
   }
 
@@ -384,7 +405,7 @@ export default class Changes extends View {
 
   setRows(rows, coloured) {
     if (coloured) paint(rows, coloured);
-    this.rows = rows; this.pairs = splitRows(rows);
+    this.rows = rows; this.pairs = splitRows(rows); this.rowsGen++;
     this.diffChars = rows.reduce((n, row) => Math.max(n, row.text.length), 0);
   }
 
@@ -393,6 +414,77 @@ export default class Changes extends View {
     if (!next) return;
     this.reveal.set(row.gap, next);
     this.showFull(this.full);
+    cx.notify();
+  }
+
+  // A commit's short id, unique in its repo; its full id if Git cannot say.
+  async shortSha(git, root, sha) {
+    const key = `${root}\0${sha}`;
+    if (!this.shorts.has(key)) {
+      const r = await git(["rev-parse", "--short", sha]);
+      this.shorts.set(key, r.code === 0 ? r.stdout.trim() : sha);
+    }
+    return this.shorts.get(key);
+  }
+
+  // What copying reads for the shown file. The selection survives a refresh to the same content and revisions; anything
+  // else drops it. `prev`: the copy before setLines cleared it.
+  setCopy(prev, path, snapshot, sides) {
+    const revs = this.revs, same = prev?.path === path && prev.snapshot === snapshot && prev.revs?.old === revs?.old && prev.revs?.new === revs?.new;
+    if (!same) { this.sel = null; this.status = null; }
+    this.copy = { path, snapshot, sides, revs };
+  }
+
+  // No revisions known: the lines may be a commit's, so no reference rather than a working-tree one.
+  referenceOf(sel) {
+    const copy = this.copy;
+    return reference(copy.path, sel, sel && (copy.revs ? copy.revs[sel.side] : false));
+  }
+
+  selectedLines() { return this.copy ? this.sel : null; }
+
+  // A press says what the click on a row that follows it can't: shift, and the column.
+  pressDiff(event) {
+    const { local_position: at, bounds } = event;
+    this.press = { shift: event.modifiers.shift, half: at && bounds && at.x < bounds.width / 2 ? "left" : "right" };
+    this.diffFocus.focus();
+  }
+
+  // A row's list key carries the rows' generation, so a click on a row drawn before they were replaced does nothing.
+  clickRow(listKey, cx) {
+    const at = listKey.indexOf("|"), key = listKey.slice(at + 1), press = this.press;
+    this.press = null;
+    if (listKey.slice(0, at) !== String(this.rowsGen)) return;
+    const item = (this.split ? this.pairs : this.rows).find((r) => r.key === key);
+    if (item?.dir) return this.expand(key, cx);
+    if (!press || !this.copy) return;
+    const sel = this.selectedLines(), picked = pickLine(item, { split: this.split, half: press.half, extendOld: press.shift && sel?.side === "old" });
+    const next = nextSelection(sel, picked, press.shift);
+    if (!next || next === sel) return;
+    if (!this.copy.sides?.[next.side] && hiddenCount(this.rows, next)) {
+      this.status = { text: "Cannot select across unavailable lines; select within one displayed range", error: true };
+    } else { this.sel = next; this.status = null; }
+    cx.notify();
+  }
+
+  copyOut(kind, cx) {
+    const sel = this.selectedLines(), copy = this.copy;
+    if (!copy || (kind === "text" && !sel)) return;
+    let text, done;
+    if (kind === "reference") {
+      text = this.referenceOf(sel);
+      done = text ? "Copied reference" : INDEX_ONLY;
+    } else {
+      const out = selectedText(copy.sides?.[sel.side], this.rows, sel);
+      text = out.text; done = out.reason ?? `Copied ${lineCount(sel)}`;
+    }
+    if (text != null) cx.write_to_clipboard(text);
+    this.status = { text: done, error: text == null };
+    cx.notify();
+  }
+
+  clearSelection(cx) {
+    this.sel = null; this.status = null;
     cx.notify();
   }
 
@@ -501,8 +593,8 @@ export default class Changes extends View {
   }
 
   // An absent line (the empty side of a split row) is shaded.
-  lineCell(line, number, t, runs, mono) {
-    const [band, numbers] = this.changed[line?.tint ?? line?.kind] ?? [line ? null : t.raised + "60", t.dim];
+  lineCell(line, number, t, runs, mono, selected = false) {
+    const [band, numbers] = selected ? [t.selected, t.foreground] : this.changed[line?.tint ?? line?.kind] ?? [line ? null : t.raised + "60", t.dim];
     return h_flex().gap(10).when(Boolean(band), (e) => e.bg(band))
       .child(div().w(mono.numbers).flex_none().text_right().text_color(numbers).child(number === undefined ? "" : String(number)))
       .child(runs ? h_flex().flex_1().min_w(0).overflow_hidden().children(runs.map(([text, category]) =>
@@ -510,22 +602,43 @@ export default class Changes extends View {
         : div().flex_1().min_w(0).truncate().child(line?.text ?? ""));
   }
 
-  diffRow(row, t, mono) {
+  diffRow(row, t, mono, sel) {
     // A header above hidden lines, and the row after a change above them, reveal them when clicked (`expand`).
     if (row.kind === "@" || row.kind === "more") {
       const action = Boolean(row.dir);
       return div().w_full().px(12).h(mono.row).flex_none().truncate().bg(t.raised).text_color(action ? t.accent : t.dim).when(action, (e) => e.cursor_pointer()).child(row.text);
     }
-    const old = row.kind === "-";
-    return this.lineCell(row, old ? row.old : row.new, t, old ? row.oldRuns : row.newRuns, mono).w_full().h(mono.row).flex_none();
+    // A context line in an old-side selection shows its old number: the one copied.
+    const old = row.kind === "-" || (row.kind === " " && selects(sel, "old", row.old)), side = old ? "old" : "new", number = lineOn(row, side);
+    return this.lineCell(row, number, t, old ? row.oldRuns : row.newRuns, mono, selects(sel, side, number)).w_full().h(mono.row).flex_none();
   }
 
-  splitRow(pair, t, mono) {
-    if (!("left" in pair)) return this.diffRow(pair, t, mono);
+  splitRow(pair, t, mono, sel) {
+    if (!("left" in pair)) return this.diffRow(pair, t, mono, sel);
     return h_flex().w_full().h(mono.row).flex_none()
-      .child(this.lineCell(pair.left, pair.left?.old, t, pair.left?.oldRuns, mono).flex_1().min_w(0).h_full())
+      .child(this.lineCell(pair.left, pair.left?.old, t, pair.left?.oldRuns, mono, selects(sel, "old", pair.left?.old)).flex_1().min_w(0).h_full())
       .child(div().w(1).h_full().flex_none().bg(t.border))
-      .child(this.lineCell(pair.right, pair.right?.new, t, pair.right?.newRuns, mono).flex_1().min_w(0).h_full());
+      .child(this.lineCell(pair.right, pair.right?.new, t, pair.right?.newRuns, mono, selects(sel, "new", pair.right?.new)).flex_1().min_w(0).h_full());
+  }
+
+  // The shown file's reference, with the selection's side and size, and the copy buttons, below the diff. A button whose
+  // copy can't happen is off, its reason in its tooltip.
+  copyBar(sel, t, dz) {
+    const copy = this.copy, ref = this.referenceOf(sel), why = sel ? textReason(copy.sides?.[sel.side], this.rows, sel) : "Select lines to copy their text";
+    let size = "Click a line to select it, shift-click to extend";
+    if (sel) {
+      const hidden = hiddenCount(this.rows, sel);
+      size = `${lineCount(sel)}${hidden ? `, including ${hidden} hidden` : ""}`;
+    }
+    const button = (id, label, tip, off, onClick) => div().id(id).flex_none().h(dz(22)).px(8).flex().items_center().rounded(6).border_1().border_color(t.border)
+      .tooltip(off ?? tip).when(Boolean(off), (e) => e.text_color(t.dim)).when(!off, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => onClick(cx))).child(label);
+    return h_flex().id("copy-bar").flex_none().px(10).py(4).gap(6).items_center().border_t(1).border_color(t.border).text_size(dz(11)).text_color(t.muted)
+      .when(Boolean(sel), (e) => e.child(div().flex_none().text_color(t.dim).child(sel.side === "old" ? "Old" : "New")))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(ref ?? `${copy.path}, in the index`))
+      .child(div().flex_none().max_w(260).truncate().when(Boolean(this.status?.error), (e) => e.text_color(t.ansi1)).child(this.status?.text ?? size))
+      .child(button("copy-reference", "Copy reference", "Copy the file and lines (ctrl-shift-c)", ref ? null : INDEX_ONLY, (cx) => this.copyOut("reference", cx)))
+      .child(button("copy-text", "Copy text", "Copy the lines' text (ctrl-c)", why, (cx) => this.copyOut("text", cx)))
+      .when(Boolean(sel), (e) => e.child(button("copy-clear", "×", "Clear the selection (escape)", null, (cx) => this.clearSelection(cx))));
   }
 
   startDrag(cx) {
@@ -627,9 +740,10 @@ export default class Changes extends View {
     this.changed = CHANGED[darkColour(t.background) ? "dark" : "light"];
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     const nothing = this.src ? (this.picked ? this.src.empty : this.src.none) : this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
-    const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t, mono)] : [this.rows, (r, t) => this.diffRow(r, t, mono)];
-    const list = v_virtual_list("changes-diff", items.length, mono.row, (i) => items[i].key, (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full()
-      .on_item_click((key, cx) => this.expand(key, cx));
+    const sel = this.selectedLines();
+    const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t, mono, sel)] : [this.rows, (r, t) => this.diffRow(r, t, mono, sel)];
+    const list = v_virtual_list("changes-diff", items.length, mono.row, (i) => `${this.rowsGen}|${items[i].key}`, (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full()
+      .on_item_click((key, cx) => this.clickRow(key, cx));
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13)).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.findFocused) { this.closeFind(true); cx.stop_propagation(); cx.notify(); return; }
@@ -656,11 +770,18 @@ export default class Changes extends View {
         { part: this.listPart, label: this.query ? "Matches" : "Changed files" }))
       .child(divider.id("changes-divider").flex_none()[cursor]().on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
       .child(part(v_flex().flex_1().min_w(0).min_h(0), v_flex().flex_1().min_h(0)
-        .child(div().flex_1().min_h(0).relative().font_family(mono.family).text_size(mono.size)
+        .child(div().id("changes-diff-box").flex_1().min_h(0).relative().font_family(mono.family).text_size(mono.size).track_focus(this.diffFocus)
+          .on_mouse_down("left", (e) => this.pressDiff(e))
+          .on_key_down((e, cx) => {
+            const { control, shift, alt } = e.modifiers;
+            if (control && !alt && e.key.toLowerCase() === "c") { this.copyOut(shift ? "reference" : "text", cx); cx.stop_propagation(); }
+            else if (e.key === "escape" && sel) { this.clearSelection(cx); cx.stop_propagation(); }
+          })
           // In a horizontal scroller the list keeps its last measured width, leaving the side-by-side divider off centre.
           .child(this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, this.diffChars * mono.char + mono.numbers + 30)).h_full().child(list)))
           .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
           .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child("Select a file to view its changes"))))
+        .when(Boolean(this.open && this.copy), (e) => e.child(this.copyBar(sel, t, dz)))
         .when(noted("diff"), (e) => e.child(note(dz(11)).pt(6))),
         { part: "diff", label: "Diff", code: mono.size }))
       // While dragging, a cover keeps the pointer's moves and release even over the diff.

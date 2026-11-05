@@ -112,6 +112,8 @@ export function paint(rows, coloured) {
 export const STEP = 20;
 
 export const cutLine = (line) => (line.length > 4000 ? line.slice(0, 4000) + CUT : line);
+// Whether a row's `raw` (its diff line without the +/-/space prefix) was cut by cutLine.
+export const isCut = (raw) => raw.length === 3999 + CUT.length && raw.endsWith(CUT);
 
 // The last line a compact diff's hunks reach on either side: a floor for the file's length.
 export function hunkEnd(lines) {
@@ -123,10 +125,11 @@ export function hunkEnd(lines) {
   return end;
 }
 
-// A whole-file diff's rows for diffView, its @@ row left out; null unless the diff is whole, neither side is longer
-// than `maxLines` (their rows take QuickJS a good part of the 500 ms a task may run; the header's counts say so before
-// anything is split) and the view before any reveal fits `maxRows`: a longer one keeps the plain diff, cut, so hidden
-// changes never pass for unchanged lines.
+// A whole-file diff -> { rows, sides }: `sides` its whole original lines (wholeSides), `rows` its rows for diffView, its
+// @@ row left out. null unless the diff is whole and neither side is longer than `maxLines` (their rows take QuickJS a
+// good part of the 500 ms a task may run; the header's counts say so before anything is split). `rows` is null when
+// the view before any reveal is longer than `maxRows`: that keeps the plain diff, cut, so hidden changes never pass
+// for unchanged lines.
 export function fullRows(text, maxLines = 20000, maxRows = 1500) {
   const h = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/m.exec(text.slice(0, 4096));
   if (!h || Math.max(+(h[1] ?? 1), +(h[2] ?? 1)) > maxLines) return null;
@@ -134,7 +137,7 @@ export function fullRows(text, maxLines = 20000, maxRows = 1500) {
   if (!sides.old || !sides.new) return null;
   const lines = text.replace(/\n$/, "").split("\n");
   const rows = diffRows(lines.slice(lines.findIndex((l) => l.startsWith("@@"))).map(cutLine)).slice(1);
-  return diffView(rows, new Map()).rows.length <= maxRows ? rows : null;
+  return { rows: diffView(rows, new Map()).rows.length <= maxRows ? rows : null, sides };
 }
 
 // The visible rows of a whole-file diff's numbered rows (`full`, its @@ row left out): each change with `context`

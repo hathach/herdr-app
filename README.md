@@ -34,6 +34,10 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   diffs coloured by `syntax.js`, a line lexer (not a parser), which stops colouring after 250 ms, since Herdr interrupts
   a script task after 500 ms. A diff opens 20 more unchanged lines a click: its hunk header for those above, a row after
   the hunk for those below (`diffView` in `diff.js`; files up to 20,000 lines, an initial view of at most 1,500 rows).
+  Click a diff line to select it, shift-click to extend the range on its side (deleted lines are the old side; side by
+  side, the column clicked). `ctrl-shift-c` (Copy reference) copies `path:L6-L8`, or `path@<short sha>:L6-L8` when the
+  lines come from a commit: deleted lines, the Git and PRs panels. `ctrl-c` (Copy text) copies the lines without
+  numbers or markers, whole where the view cuts them; Escape clears (`selection.js`).
   With props `{source: "git", panel: "git"}` it is the Git panel's lower half: my-git's picked commit, read-only,
   against its first parent (a root commit against nothing), with its own view and text size settings. With
   `{source: "pr", panel: "prs"}` it is the PRs panel's lower half: the open pull request's head against its merge base
