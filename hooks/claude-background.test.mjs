@@ -54,9 +54,8 @@ test("the hook exits 0 quietly without a terminal, in a background session, with
   assert.equal(run(STOP, { terminal: null }).argv, null);
   assert.equal(run(STOP, { kind: "bg" }).argv, null);
   for (const r of [run(STOP, { hc: null, path: "/nonexistent" }), run("not json"), run(JSON.stringify({ hook_event_name: "PreToolUse" }))]) {
-    assert.equal(r.status, 0); assert.equal(r.stdout, ""); assert.equal(r.stderr, "");
+    assert.equal(r.status, 0); assert.equal(r.stdout, ""); assert.equal(r.stderr, ""); assert.equal(r.argv, null);
   }
-  assert.equal(run("not json").argv, null);
   const slow = run(STOP, { hc: "sleep" });
   assert.equal(slow.status, 0); assert.equal(slow.stdout, "");
   assert.ok(slow.ms < 3000, `took ${slow.ms} ms`);

@@ -5,7 +5,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export const LABELS = ["claude.background_tasks", "claude.session_crons"];
+// Each is a Stop input field and, prefixed `claude.`, the label it fills.
+const FIELDS = ["background_tasks", "session_crons"];
 
 // A hook event -> `hc label` pairs, or null for an event it ignores. Stop gives each list's length; a list that is
 // empty or missing removes its label (`k=`). A process starting or ending has nothing in flight; /clear ends one
@@ -13,8 +14,8 @@ export const LABELS = ["claude.background_tasks", "claude.session_crons"];
 // does through a compaction, so neither clears.
 export function labelsFor(event) {
   const count = (list) => (Array.isArray(list) && list.length ? String(list.length) : "");
-  const name = event?.hook_event_name, cleared = LABELS.map((k) => `${k}=`);
-  if (name === "Stop") return [`${LABELS[0]}=${count(event.background_tasks)}`, `${LABELS[1]}=${count(event.session_crons)}`];
+  const name = event?.hook_event_name, cleared = FIELDS.map((f) => `claude.${f}=`);
+  if (name === "Stop") return FIELDS.map((f) => `claude.${f}=${count(event[f])}`);
   if (name === "SessionStart") return ["startup", "resume"].includes(event.source) ? cleared : null;
   if (name === "SessionEnd") return event.reason === "clear" ? null : cleared;
   return null;

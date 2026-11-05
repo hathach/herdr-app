@@ -10,22 +10,19 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   foreground runs as `claude-ada` (the wrapper does `exec -a claude-ada claude`). A Claude Code session whose turn
   ended but still runs background work (shells, Monitors) shows a spinner with their count beside its status, and a
   clock for scheduled prompts; an idle one with background tasks sorts with Working. Done keeps meaning a response to
-  read. The counts come from `hooks/claude-background.mjs`, only while claude is the terminal's foreground program.
-- `hooks/claude-background.mjs`: a Claude Code hook (Stop, SessionStart, SessionEnd) that writes the session's
-  in-flight `background_tasks` and `session_crons` counts as the herdr-core labels `claude.background_tasks` and
-  `claude.session_crons` on its terminal (`$HC_TERMINAL_ID`), and removes them when a process starts or ends (not on
-  `/clear` or a compaction, which keep background work running). It does nothing outside an hc terminal or in a
-  session moved to the background, and every failure exits 0 without output. Register it in each Claude config dir:
+  read.
+- `hooks/claude-background.mjs`: a Claude Code hook that labels the session's hc terminal with those counts
+  (`claude.background_tasks`, `claude.session_crons`) at each Stop. Register it in each Claude config dir:
 
   ```sh
   for d in ~/.claude ~/.claude-ada; do python3 - "$d/settings.json" <<'EOF'
   import json, sys
   path = sys.argv[1]; settings = json.load(open(path))
   hook = {"type": "command", "command": "$HOME/.config/herdr-app/hooks/claude-background.mjs", "timeout": 5}
-  for event in ("Stop", "SessionStart", "SessionEnd"):
+  for event, matcher in (("Stop", None), ("SessionStart", "startup|resume"), ("SessionEnd", None)):
       groups = settings.setdefault("hooks", {}).setdefault(event, [])
       if not any(h.get("command") == hook["command"] for g in groups for h in g.get("hooks", [])):
-          groups.append({"hooks": [hook]})
+          groups.append({**({"matcher": matcher} if matcher else {}), "hooks": [hook]})
   json.dump(settings, open(path, "w"), indent=2)
   EOF
   done

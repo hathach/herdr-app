@@ -6,7 +6,7 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, settings } from "herdr";
-import { RANK, background, rankOf } from "./background.js";
+import { RANK, isAlt, background, rankFor } from "./background.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -64,8 +64,6 @@ function duration(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
-// The second Claude account runs as `exec -a claude-ada claude`; Herdr shows both as claude-code (herdrdev/herdr-app#330).
-const isAlt = (term) => term.foreground?.argv?.[0] === "claude-ada";
 
 // The terminal's address: `t3s`, or `ci/t7` on another machine.
 function address(id, addr, t, mono) {
@@ -136,15 +134,15 @@ export default class Agents extends View {
 
   rank(a) {
     const heldDone = a.address === this.held?.address && this.held.rank === RANK.done;
-    return rankOf(a.status, { heldDone, tasks: this.bg.get(a.address)?.tasks });
+    return rankFor(a.status, { heldDone, tasks: this.bg.get(a.address).tasks });
   }
 
   // What a finished turn left running: a spinner with the background task count, a clock for scheduled prompts.
   badge(t, a) {
-    const { tasks, crons } = this.bg.get(a.address) ?? {};
+    const { tasks, crons } = this.bg.get(a.address);
     if (!tasks && !crons) return null;
     const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-    const tip = [tasks && `${plural(tasks, "background task")} running`, crons && `${plural(crons, "scheduled prompt")}`].filter(Boolean).join(" · ");
+    const tip = [tasks && `${plural(tasks, "background task")} running`, crons && plural(crons, "scheduled prompt")].filter(Boolean).join(" · ");
     return h_flex().id(`bg-${a.address}`).flex_none().gap(3).items_center().text_size(11).text_color(t.dim).tooltip(tip)
       .when(Boolean(tasks), (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)).child(String(tasks)))
       .when(Boolean(crons), (el) => el.child(svg("mods/workspace-chrome/clock.svg").size(11).flex_none()));
@@ -240,7 +238,6 @@ export default class Agents extends View {
     let list = agents();
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     const all = terminals();
-    const alt = new Set(all.filter(isAlt).map((x) => x.address));
     const byAddress = new Map(all.map((k) => [k.address, k]));
     this.bg = new Map(list.map((a) => [a.address, background(a.status, byAddress.get(a.address))]));
     const shown = focused()?.agent;
@@ -306,7 +303,7 @@ export default class Agents extends View {
     }
 
     const row = (a, i, subs = []) => {
-      const pic = alt.has(a.address) ? icon(a.program, 16, t.ansi4, true) : icon(a.program, 16, t.foreground);
+      const pic = isAlt(byAddress.get(a.address)) ? icon(a.program, 16, t.ansi4, true) : icon(a.program, 16, t.foreground);
       const more = detail.get(a.address);
       if (collapsed) {
         return h_flex()

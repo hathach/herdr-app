@@ -3,20 +3,22 @@
 
 export const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 
+// The second Claude account runs as `exec -a claude-ada claude`; Herdr shows both as claude-code (herdrdev/herdr-app#330).
+export const isAlt = (term) => term?.foreground?.argv?.[0] === "claude-ada";
+const isClaude = (term) => term?.foreground?.name === "claude" || term?.foreground?.argv?.[0] === "claude" || isAlt(term);
+
 // The counts hooks/claude-background.mjs leaves on a session's terminal: { tasks, crons }. Trusted only while claude
 // is the terminal's foreground program (a killed one leaves its last labels behind) and its turn has ended (during a
 // turn they are the previous turn's).
 export function background(status, term) {
-  const none = { tasks: 0, crons: 0 };
-  const fg = term?.foreground, claude = fg?.name === "claude" || /^claude(-ada)?$/.test(fg?.argv?.[0] ?? "");
-  if ((status !== "done" && status !== "idle") || !claude) return none;
+  if ((status !== "done" && status !== "idle") || !isClaude(term)) return { tasks: 0, crons: 0 };
   const count = (v) => (/^[1-9]\d{0,5}$/.test(v ?? "") ? Number(v) : 0);
   return { tasks: count(term.labels?.["claude.background_tasks"]), crons: count(term.labels?.["claude.session_crons"]) };
 }
 
 // An agent's place in the list. A done agent you are looking at turns idle but stays with Done until you leave it
 // (`heldDone`); an idle one still running background tasks sorts with Working. Scheduled prompts alone don't count.
-export function rankOf(status, { heldDone = false, tasks = 0 } = {}) {
+export function rankFor(status, { heldDone = false, tasks = 0 } = {}) {
   if (status === "idle" && heldDone) return RANK.done;
   if (status === "idle" && tasks > 0) return RANK.working;
   return RANK[status] ?? 0;
