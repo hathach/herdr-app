@@ -8,6 +8,7 @@
 !/settings.json
 !/programs.json
 !/docs/
+!/hooks/
 !/layouts/
 /layouts/*
 !/layouts/my-*.json
