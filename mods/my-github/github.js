@@ -8,7 +8,7 @@ export function parseRemote(url) {
   return m && NAME.test(m[2]) ? { host: m[1].toLowerCase(), repo: m[2] } : null;
 }
 
-// `git config --get-regexp '^remote\..*\.(url|gh-resolved)$'` lines -> [{ remote, host, repo, resolved? }].
+// `git config --get-regexp '^remote\..*\.(url|gh-resolved)$'` lines -> [{ remote, url, host, repo, resolved? }].
 // `gh repo set-default` stores its choice as `remote.<name>.gh-resolved`: "base" (that remote) or "owner/repo" on
 // that remote's host (gh 2.103.3 context/context.go BaseRepo).
 export function parseRemotes(text) {
@@ -18,7 +18,7 @@ export function parseRemotes(text) {
     if (!m) continue;
     if (m[2] === "gh-resolved") { resolved.set(m[1], m[3]); continue; }
     const parsed = parseRemote(m[3]);
-    if (parsed) remotes.set(m[1], { remote: m[1], ...parsed });
+    if (parsed) remotes.set(m[1], { remote: m[1], url: m[3], ...parsed });
   }
   for (const [name, value] of resolved) if (remotes.has(name)) remotes.get(name).resolved = value;
   return [...remotes.values()];
@@ -45,6 +45,22 @@ export function pickRepo({ saved, remotes }) {
   const def = ghDefault(remotes);
   const repo = [saved, def?.host === "github.com" && def.repo].find((c) => choices.includes(c)) ?? choices[0];
   return { repo, choices };
+}
+
+// The `upstream` or `origin` remote (upstream first) on github.com that is `repo`, or null.
+export const remoteFor = (remotes, repo) =>
+  ["upstream", "origin"].map((name) => remotes.find((r) => r.remote === name)).find((r) => r?.host === "github.com" && r.repo === repo) ?? null;
+
+// The pull request the PRs panel's changes block shows (shared `pr.selection`), from a detail view read in `where`.
+// `prev` comes back when nothing changed; it keeps its gen when only the labels changed; anything else, or a refresh,
+// takes `gen`.
+const LABELS = ["title", "url", "changedFiles", "baseRef"];
+export function prSelection(prev, view, where, { gen, refresh = false }) {
+  const pick = { on: where.on ?? null, root: where.root, repo: where.repo, fetchUrl: where.remote?.url ?? null, number: view.number,
+    head: view.headRefOid, base: view.baseRefOid };
+  const same = Boolean(prev) && !refresh && Object.keys(pick).every((k) => prev[k] === pick[k]);
+  const next = { gen: same ? prev.gen : gen, ...pick, title: view.title, url: view.url, changedFiles: view.changedFiles, baseRef: view.baseRefName };
+  return same && LABELS.every((k) => prev[k] === next[k]) ? prev : next;
 }
 
 // A failed `gh` run -> { kind, message }. Kinds: auth, rate, access, other. Exit code 4 is gh's "authentication

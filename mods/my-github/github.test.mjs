@@ -1,7 +1,7 @@
 // node --no-warnings --test mods/my-github/github.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseRemote, parseRemotes, ghDefault, pickRepo, classifyError, classifyRejection, parseChecks, ago, since, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
+import { parseRemote, parseRemotes, ghDefault, pickRepo, remoteFor, prSelection, classifyError, classifyRejection, parseChecks, ago, since, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
 
 test("parseRemote reads ssh, scp-like and https URLs", () => {
   const want = { host: "github.com", repo: "hathach/tinyusb" };
@@ -18,8 +18,8 @@ test("parseRemotes keeps remote names and gh's resolution", () => {
   const text = "remote.origin.url git@github.com:me/r.git\nremote.up.stream.url https://github.com/them/r\nremote.local.url /tmp/x\n" +
     "remote.origin.gh-resolved base\nremote.gone.gh-resolved base\n";
   assert.deepEqual(parseRemotes(text), [
-    { remote: "origin", host: "github.com", repo: "me/r", resolved: "base" },
-    { remote: "up.stream", host: "github.com", repo: "them/r" },
+    { remote: "origin", url: "git@github.com:me/r.git", host: "github.com", repo: "me/r", resolved: "base" },
+    { remote: "up.stream", url: "https://github.com/them/r", host: "github.com", repo: "them/r" },
   ]);
 });
 
@@ -131,4 +131,27 @@ test("findItems matches number or title, every term", () => {
   assert.deepEqual(numbers("123"), [123, 1234]);
   assert.deepEqual(findItems([{ number: 1234, title: "x" }], "123").map((it) => it.number), [1234]);
   assert.deepEqual(numbers("nothing"), []);
+});
+
+test("remoteFor: upstream before origin, github.com only, never another fork", () => {
+  assert.equal(remoteFor([r("origin", "org/x"), r("upstream", "org/x")], "org/x").remote, "upstream");
+  assert.equal(remoteFor([r("origin", "me/x"), r("upstream", "org/x")], "me/x").remote, "origin");
+  assert.equal(remoteFor([r("fork", "org/x"), r("origin", "me/x")], "org/x"), null);
+  assert.equal(remoteFor([r("origin", "org/x", "ghe.corp")], "org/x"), null);
+});
+
+test("prSelection keeps, relabels or renews the selection", () => {
+  const where = { on: null, root: "/r", repo: "org/x", remote: { url: "git@github.com:org/x.git" } };
+  const view = { number: 7, title: "T", url: "u", changedFiles: 2, headRefOid: "h", baseRefOid: "b", baseRefName: "main" };
+  const first = prSelection(null, view, where, { gen: 1 });
+  assert.deepEqual(first, { gen: 1, on: null, root: "/r", repo: "org/x", fetchUrl: "git@github.com:org/x.git", number: 7, head: "h", base: "b", title: "T", url: "u", changedFiles: 2, baseRef: "main" });
+  assert.equal(prSelection(first, { ...view }, where, { gen: 2 }), first);
+  const relabelled = prSelection(first, { ...view, title: "T2" }, where, { gen: 2 });
+  assert.equal(relabelled.gen, 1); assert.equal(relabelled.title, "T2");
+  assert.deepEqual([prSelection(first, { ...view, baseRefName: "dev" }, where, { gen: 2 })].map((s) => [s.gen, s.baseRef]), [[1, "dev"]]);
+  assert.equal(prSelection(first, { ...view, headRefOid: "h2" }, where, { gen: 2 }).gen, 2);
+  assert.equal(prSelection(first, { ...view, baseRefOid: "b2" }, where, { gen: 2 }).gen, 2);
+  assert.equal(prSelection(first, view, { ...where, on: "box" }, { gen: 2 }).gen, 2);
+  assert.equal(prSelection(first, view, where, { gen: 2, refresh: true }).gen, 2);
+  assert.equal(prSelection(null, view, { ...where, remote: null }, { gen: 3 }).fetchUrl, null);
 });

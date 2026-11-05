@@ -2,16 +2,18 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, focused, exec, layout, theme, props, shared, setShared, run } from "herdr";
-import { parseRemotes, pickRepo, ghFailure, classifyRejection, parseChecks, BUCKETS, ago, since, writeOutcome, matchingIds, commentLanded, exactNumber, findItems } from "./github.js";
+import { parseRemotes, pickRepo, ghFailure, classifyRejection, parseChecks, BUCKETS, ago, since, writeOutcome, matchingIds, commentLanded, exactNumber, findItems, remoteFor, prSelection } from "./github.js";
 import { sizedPart, panelSize, partPx, scaler, PILL_SLOT } from "./part-size.js";
 import { SIDES, nextSide, sideOf, shareKey, twelfth, shareOf, shareAt } from "./part-split.js";
 
 const POLL = 60000, BACKOFF = 300000, LIMIT = 100, REPOS = "my-github.repos";
+// The open PR, for the my-changes block below the PRs panel (props.source "pr").
+const PR_SELECTION = "pr.selection";
 const ISSUE = "number,title,state,author,labels,updatedAt,url", PR = `${ISSUE},isDraft,headRefName,baseRefName,reviewDecision`;
 const VIEW = ",body,comments,createdAt";
 const KINDS = {
   issues: { cmd: "issue", title: "Issues", noun: "issue", path: "issues", filters: ["open", "closed", "all"], list: ISSUE, view: ISSUE + VIEW },
-  prs: { cmd: "pr", title: "Pull requests", noun: "pull request", path: "pulls", filters: ["open", "closed", "merged", "all"], list: PR, view: PR + VIEW },
+  prs: { cmd: "pr", title: "Pull requests", noun: "pull request", path: "pulls", filters: ["open", "closed", "merged", "all"], list: PR, view: PR + VIEW + ",headRefOid,baseRefOid,changedFiles" },
 };
 const REVIEW = { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "review required" };
 
@@ -64,6 +66,8 @@ export default class GitHub extends View {
     this.side = sideOf(localStorage.getItem(`${this.listKey}:side`));
     this.share = { down: shareOf(localStorage.getItem(this.listKey), 5 / 12), across: shareOf(localStorage.getItem(shareKey(this.listKey, "across")), 5 / 12) };
     this.search = ""; this.items = []; this.gen = 0; this.detailGen = 0; this.loadedAt = 0;
+    // A selection kept in saved shared state belongs to an earlier start; picks numbers each new one.
+    this.picks = 0; this.publish(null);
     this.input = InputState.new({ placeholder: "Search, GitHub syntax" });
     this.input.on("submit", (_e, cx) => { this.search = this.input.value().trim(); this.refresh(cx); });
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
@@ -106,13 +110,15 @@ export default class GitHub extends View {
     if (top.code !== 0) return { error: "Not a git repository" };
     // Exit 1 is "no remotes"; anything higher is git failing.
     if (config.code > 1) return { error: `git config failed: ${(config.stderr || config.stdout).trim()}` };
-    const where = { root: top.stdout.trim(), on };
-    return { ...where, ...pickRepo({ saved: shared(REPOS)?.[slot(where)], remotes: parseRemotes(config.stdout) }) };
+    const where = { root: top.stdout.trim(), on }, remotes = parseRemotes(config.stdout);
+    const picked = pickRepo({ saved: shared(REPOS)?.[slot(where)], remotes });
+    return { ...where, ...picked, remote: picked.repo ? remoteFor(remotes, picked.repo) : null };
   }
 
   gh(args, where) { return exec("gh", [...args, "-R", `github.com/${where.repo}`], { cwd: where.root, on: where.on }); }
 
-  refresh(cx) {
+  // `manual`: the Refresh button, which also reads the open PR's changes again.
+  refresh(cx, manual = false) {
     const gen = ++this.gen, loc = location(), stamp = this.stamp(loc);
     // Another place or repo choice: nothing from the old one may show while this one loads, or after it fails.
     if (stamp !== this.stamped) {
@@ -133,7 +139,7 @@ export default class GitHub extends View {
         const items = JSON.parse(must(await this.gh(args, where)));
         if (gen !== this.gen) return;
         this.items = items; this.error = null;
-        if (this.selected) await this.loadDetail(++this.detailGen);
+        if (this.selected) await this.loadDetail(++this.detailGen, manual);
       } catch (e) {
         if (gen === this.gen) this.error = this.classify(e);
       } finally {
@@ -155,7 +161,11 @@ export default class GitHub extends View {
 
   closeDetail() {
     this.selected = null; this.drag = false; this.detail = null; this.checks = null; this.checksError = null; this.detailError = null; this.confirm = null; this.detailGen++;
+    this.publish(null);
   }
+
+  // Every setShared re-renders every mod: clearing what is already clear is skipped.
+  publish(selection) { if (this.kind === "prs" && (selection || shared(PR_SELECTION))) setShared(PR_SELECTION, selection); }
 
   shows(where) { return this.where?.on === where.on && this.where?.repo === where.repo; }
 
@@ -177,7 +187,7 @@ export default class GitHub extends View {
   }
 
   // A failed detail keeps the list row's title and link; checks succeed or fail on their own.
-  async loadDetail(gen) {
+  async loadDetail(gen, refresh = false) {
     const n = String(this.selected), where = this.where, key = this.itemKey(), started = ++this.seq;
     this.detailLoading = true;
     const checks = this.kind !== "prs" ? null : this.gh(["pr", "checks", n, "--json", "name,state,bucket,link,workflow"], where)
@@ -185,7 +195,13 @@ export default class GitHub extends View {
     try {
       const view = JSON.parse(must(await this.gh([this.k.cmd, "view", n, "--json", this.k.view], where)));
       this.settle(key, view, started);
-      if (gen === this.detailGen) { this.detail = view; this.detailError = null; }
+      if (gen === this.detailGen) {
+        this.detail = view; this.detailError = null;
+        if (this.kind === "prs") {
+          const prev = shared(PR_SELECTION), next = prSelection(prev, view, where, { gen: this.picks + 1, refresh });
+          if (next !== prev) { this.picks = Math.max(this.picks, next.gen); this.publish(next); }
+        }
+      }
     } catch (e) {
       if (gen === this.detailGen) this.detailError = this.classify(e).message;
     }
@@ -486,7 +502,7 @@ export default class GitHub extends View {
         .when(Boolean(repo) && this.kind === "issues", (e) => e.child(this.button("new-issue", "mods/my-github/plus.svg", "New issue on GitHub", (cx) => cx.open_url(`https://github.com/${repo}/issues/new/choose`), t)))
         .when(Boolean(repo), (e) => e.child(this.button("open-repo", "mods/my-github/external.svg", "Open on GitHub", (cx) => cx.open_url(`https://github.com/${repo}/${this.k.path}`), t)))
         .when(Boolean(this.selected), (e) => e.child(this.button("github-side", `mods/my-github/panel-${this.side}.svg`, `List on the ${this.side} · move it`, (cx) => this.moveList(cx), t)))
-        .child(this.button("refresh", "mods/my-github/refresh.svg", "Refresh", (cx) => this.refresh(cx), t, this.loading)))
+        .child(this.button("refresh", "mods/my-github/refresh.svg", "Refresh", (cx) => this.refresh(cx, true), t, this.loading)))
       .when(Boolean(w?.choices) && this.choosing, (e) => e.child(h_flex().flex_wrap().px(10).py(6).gap(4).border_b(1).border_color(t.border).text_size(z(11)).text_color(t.muted)
         .children(w.choices.map((c) => this.chip(`choose-${c}`, c, c === repo, (cx) => this.choose(c, cx), t)))))
       .child(h_flex().flex_wrap().flex_none().px(10).py(5).gap(4).items_center().border_b(1).border_color(t.border).text_size(z(11)).text_color(t.muted)
