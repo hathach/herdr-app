@@ -1,10 +1,12 @@
-// Modified from Herdr's shipped `agents` mod (Apache-2.0): a second Claude account's icon is drawn in the theme's blue.
+// Modified from Herdr's shipped `agents` mod (Apache-2.0): a second Claude account's icon is drawn in the theme's blue,
+// and a Claude Code session whose turn ended shows the background work it still runs (background.js).
 // Agents in grouped or priority views; parents take their most urgent sub-agent's place.
 // A viewed done agent stays in Done until left.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, settings } from "herdr";
+import { RANK, background, rankOf } from "./background.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -40,7 +42,6 @@ function title(tab, l) {
   const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
   return tab.name === prog && telling ? live : tab.name;
 }
-const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 // A sub-agent without a pane isn't in agents(): its raw word, error counting as
 // blocked. It's never done: it reports to its parent, and the parent's done is the news.
 const kidStatus = (k, listed) => {
@@ -134,8 +135,19 @@ export default class Agents extends View {
   }
 
   rank(a) {
-    const sawDone = a.address === this.held?.address && this.held.rank === RANK.done && a.status === "idle";
-    return sawDone ? RANK.done : RANK[a.status] ?? 0;
+    const heldDone = a.address === this.held?.address && this.held.rank === RANK.done;
+    return rankOf(a.status, { heldDone, tasks: this.bg.get(a.address)?.tasks });
+  }
+
+  // What a finished turn left running: a spinner with the background task count, a clock for scheduled prompts.
+  badge(t, a) {
+    const { tasks, crons } = this.bg.get(a.address) ?? {};
+    if (!tasks && !crons) return null;
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const tip = [tasks && `${plural(tasks, "background task")} running`, crons && `${plural(crons, "scheduled prompt")}`].filter(Boolean).join(" · ");
+    return h_flex().id(`bg-${a.address}`).flex_none().gap(3).items_center().text_size(11).text_color(t.dim).tooltip(tip)
+      .when(Boolean(tasks), (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)).child(String(tasks)))
+      .when(Boolean(crons), (el) => el.child(svg("mods/workspace-chrome/clock.svg").size(11).flex_none()));
   }
 
   sortMenu(t) {
@@ -229,6 +241,8 @@ export default class Agents extends View {
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     const all = terminals();
     const alt = new Set(all.filter(isAlt).map((x) => x.address));
+    const byAddress = new Map(all.map((k) => [k.address, k]));
+    this.bg = new Map(list.map((a) => [a.address, background(a.status, byAddress.get(a.address))]));
     const shown = focused()?.agent;
     const now = Date.now();
     this.track(list, now);
@@ -332,6 +346,7 @@ export default class Agents extends View {
       // Without a space header above (priority, pinned) the row names its space.
       const full = byPriority || isPinned;
       const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
+      const badge = this.badge(t, a);
       return h_flex()
         .id(`ag-${a.address}`)
         .px(8)
@@ -362,6 +377,7 @@ export default class Agents extends View {
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
+        .when(Boolean(badge), el => el.child(badge))
         .child(this.status(t, a, byPriority && !isPinned));
     };
 
