@@ -126,7 +126,8 @@ export default class Changes extends View {
   placeKey() { return JSON.stringify(this.repoOf(this.where())); }
   key() {
     const pick = this.source && shared(this.selection);
-    const scope = this.source ? `${this.source}:${pick?.sha ?? ""}:${pick?.gen ?? ""}` : this.scope;
+    // The pick's identity as well as its gen: a reloaded publisher counts gens from the start again.
+    const scope = this.source ? `${this.source}:${JSON.stringify(pick && [pick.on, pick.root, pick.repo, pick.number, pick.sha, pick.base, pick.gen])}` : this.scope;
     return JSON.stringify({ ...this.repoOf(this.where()), scope });
   }
 
