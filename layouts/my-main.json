@@ -174,13 +174,38 @@
                     },
                     {
                       "id": "prs",
-                      "type": "block",
-                      "content": {
-                        "mod": "my-github",
-                        "props": {
-                          "kind": "prs"
+                      "type": "column",
+                      "gap": 8,
+                      "children": [
+                        {
+                          "id": "prs-items",
+                          "type": "block",
+                          "size": {
+                            "weight": 3
+                          },
+                          "content": {
+                            "mod": "my-github",
+                            "props": {
+                              "kind": "prs"
+                            }
+                          }
+                        },
+                        {
+                          "id": "prs-changes",
+                          "type": "block",
+                          "size": {
+                            "weight": 5
+                          },
+                          "content": {
+                            "mod": "my-changes",
+                            "props": {
+                              "source": "pr",
+                              "panel": "prs",
+                              "code_font_size": 13
+                            }
+                          }
                         }
-                      }
+                      ]
                     },
                     {
                       "id": "git",

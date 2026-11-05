@@ -16,7 +16,12 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   a script task after 500 ms. A diff opens 20 more unchanged lines a click: its hunk header for those above, a row after
   the hunk for those below (`diffView` in `diff.js`; files up to 20,000 lines, an initial view of at most 1,500 rows).
   With props `{source: "git", panel: "git"}` it is the Git panel's lower half: my-git's picked commit, read-only,
-  against its first parent (a root commit against nothing), with its own view and text size settings.
+  against its first parent (a root commit against nothing), with its own view and text size settings. With
+  `{source: "pr", panel: "prs"}` it is the PRs panel's lower half: the open pull request's head against its merge base
+  with the base, from the local clone (renames show as a delete and an add). A head or base not in the clone shows a
+  Fetch button that fetches exactly those commits from the repo's GitHub remote, objects only (no refs, FETCH_HEAD,
+  tags or commit graph); a shallow clone, unrelated history, several merge bases or a head already in its base show
+  why there is no comparison. Its list part is `files` and its find has a header button: `ctrl-shift-s` finds PRs.
 - `mods/my-git`: the Git panel's upper half, read-only: the focused repo's branches (current checkout, local,
   remote-tracking; no fetch) and a branch's commits, 100 a page from the tip as it was when listed. The picked commit
   goes to the my-changes block below through shared `git.selection`. Polls refs every 10 s while shown; a moved branch
@@ -32,13 +37,14 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   `ctrl-shift-f` stays Herdr's terminal search.
 - `mods/my-panel-snap`: snaps the right side panel to the nearest twelfth of the work area when a drag ends.
 - `mods/my-github`: Issues and PRs panels for the focused repo through `gh` on the repo's machine: list, filter, search,
-  detail with comments and PR checks below a list resizable in twelfths, comment, close/reopen behind a confirm. Only
+  detail with comments and PR checks below a list resizable in twelfths, comment, close/reopen behind a confirm; the
+  open PR goes to the my-changes block below through shared `pr.selection`. Only
   the `upstream` and `origin` remotes count, never other forks: the one picked in the panel, else
   `gh repo set-default`'s, else `upstream`, else `origin`; github.com only.
 - List sides (`part-split.js` in my-changes and my-github, identical copies): like the Files tree, the Changes and Git
   changed-files list moves to any side of its diff, and the Issues and PRs list to any side of an open item, from a
   header button. Each copy keeps its side and a height and a width share apart
-  (`list:<panel|pane|git|issues|prs>[:side|:across]` in its storage), so moving keeps both; the Changes list's height
+  (`list:<panel|pane|git|pr|issues|prs>[:side|:across]` in its storage), so moving keeps both; the Changes list's height
   fits its files until dragged, and the commit box stays below both.
 - `mods/my-tabs`: Herdr's tab bar plus Issues, PRs and Git buttons for the side panel, and while it is open, A−/A+ for
   the shown panel's text size (shared `panel.text_size.<files|changes|issues|prs|git>`, 10–20 px at zoom 1, default
@@ -46,15 +52,16 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   rewritten on every start).
 - Part sizes (`part-math.js` in my-files, my-changes, my-git, my-github and my-tabs, `part-size.js` in the first four,
   identical copies): each part of a panel (Files list and preview; Changes list, diff and commit box; Git commits,
-  changed files and diff; Issues and PRs list and detail) shows a `− 13 +` pill while hovered, Ctrl+scroll over it
-  resizes it, and clicking the number resets it. A part stores an offset from its panel's size
-  (`panel.text_offset.<panel>.<part>`, −12 to +14), clamped to 8–24 px at zoom 1, so A−/A+ moves every part with the
-  panel until a part reaches a limit. Below 96 px wide the pill drops its number, below 52 px only Ctrl+scroll is left.
+  changed files and diff; Issues and PRs list and detail; PR changed files and diff) shows a `− 13 +` pill while
+  hovered, Ctrl+scroll over it resizes it, and clicking the number resets it. A part stores an offset from its panel's
+  size (`panel.text_offset.<panel>.<part>`, −12 to +14), clamped to 8–24 px at zoom 1, so A−/A+ moves every part with
+  the panel until a part reaches a limit. Below 96 px wide the pill drops its number, below 52 px only Ctrl+scroll is
+  left.
   Resizing a code preview reopens its editor at the top. Fenced code blocks in Issues and PRs bodies and comments keep a
   fixed size: Herdr's Markdown view can't size them.
 - `layouts/my-main.json`: Herdr's `main` layout with its tab bar, agents list and Files and Changes panels pointed at
-  `my-tabs`, `my-agents`, `my-files` and `my-changes`, Issues and PRs panels from `my-github`, a Git panel (`my-git`
-  over `my-changes`, 3:5, resizable), a side panel sized by
+  `my-tabs`, `my-agents`, `my-files` and `my-changes`, an Issues panel from `my-github`, a PRs panel (`my-github` over
+  `my-changes`, 3:5) and a Git panel (`my-git` over `my-changes`, 3:5), both resizable, a side panel sized by
   share (default 5/12, no fixed pixel maximum) and `my-panel-snap` in it. The Files and Changes blocks' prop
   `code_font_size` (13, the panels' list size) sizes the diff and file preview text, in the terminal's font, at the
   default panel text size; without it they use the terminal's size.
