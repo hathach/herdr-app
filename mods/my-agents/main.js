@@ -4,7 +4,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, settings } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -65,6 +65,12 @@ function duration(ms) {
 
 // The second Claude account runs as `exec -a claude-ada claude`; Herdr shows both as claude-code (herdrdev/herdr-app#330).
 const isAlt = (term) => term.foreground?.argv?.[0] === "claude-ada";
+
+// The terminal's address: `t3s`, or `ci/t7` on another machine.
+function address(id, addr, t, mono) {
+  return div().id(id).min_w(0).max_w(72).truncate().font_family(mono)
+    .text_size(11).text_color(t.muted).tooltip(addr).child(addr);
+}
 
 // The agent's icon from the app's program table: a one-color glyph or a picture.
 function icon(p, size, color, glyph = false) {
@@ -179,6 +185,7 @@ export default class Agents extends View {
     const st = kidStatus(k, this.listed);
     const pic = isAlt(k) ? icon(k.program, 14, t.ansi4, true) : icon(k.program, 14, t.foreground);
     const on = k.address === shown;
+    const name = k.name || k.template || k.program?.name || "";
     return h_flex()
       .id(`sub-${k.address}`)
       .pl(39)
@@ -196,7 +203,8 @@ export default class Agents extends View {
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))
       .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))
-      .child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address))
+      .child(address(`sub-address-${k.address}`, k.address, t, this.mono).mr(6))
+      .child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(name === k.address ? "" : name))
       .child(this.status(t, { status: st }, compact));
   }
 
@@ -214,6 +222,7 @@ export default class Agents extends View {
   render(cx) {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
+    this.mono = settings().font_family ?? "JetBrains Mono";
     const collapsed = narrow();
     const sort = sortOf();
     let list = agents();
@@ -285,8 +294,6 @@ export default class Agents extends View {
     const row = (a, i, subs = []) => {
       const pic = alt.has(a.address) ? icon(a.program, 16, t.ansi4, true) : icon(a.program, 16, t.foreground);
       const more = detail.get(a.address);
-      // An agent on another machine (`vps/t7`) says which.
-      const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
       if (collapsed) {
         return h_flex()
           .id(`ag-${a.address}`)
@@ -296,6 +303,7 @@ export default class Agents extends View {
           .items_center()
           .gap(4)
           .hover((s) => s.bg(t.hover))
+          .tooltip(a.address)
           .on_click(() => run("pane.focus", { pane: a.pane }))
           .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
@@ -347,10 +355,10 @@ export default class Agents extends View {
             this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
             cx.notify();
           })).child(pic)))
+        .child(address(`ag-address-${a.address}`, a.address, t, this.mono))
         .child(h_flex().flex_1().min_w(0).gap(5).items_center()
           .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
           .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
-        .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
