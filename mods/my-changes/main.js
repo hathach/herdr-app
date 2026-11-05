@@ -6,7 +6,7 @@ import { languageOf, COLORS } from "./syntax.js";
 import { sizedPart, panelSize, partPx, scaler, codeMetrics, PILL_SLOT } from "./part-size.js";
 import { fileTree, treeRows } from "./tree.js";
 import { SIDES, nextSide, sideOf, shareKey, twelfth, shareOf, shareAt } from "./part-split.js";
-import { failure, commitBase, treeDiff } from "./commit.js";
+import { failure, commitBase, treeDiff, prBase, prFetch } from "./commit.js";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, run, layout, shared, setShared, props } from "herdr";
 
 function location() {
@@ -20,8 +20,8 @@ function location() {
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
 // The Git panel's commit reads also never fetch a partial clone's missing objects.
 const HISTORY = [...READ, "--no-lazy-fetch", "--no-pager", "--literal-pathspecs"];
-// my-git's picked commit, for a copy with props.source "git".
-const SELECTION = "git.selection";
+// What a copy with props.source shows: my-git's picked commit ("git") or my-github's open pull request ("pr").
+const SELECTIONS = { git: "git.selection", pr: "pr.selection" };
 // Changed files with their counts, the first 1,000; a fresh (untracked) file's lines are counted when it loads.
 const statFiles = (changed, stats) => changed.slice(0, 1000).map((f) => ({ ...f, ...((!f.fresh && stats[f.path]) || { add: 0, del: 0 }) }));
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
@@ -82,9 +82,11 @@ export default class Changes extends View {
   init(given, cx) {
     // As a pane (opened from the panel) it stays on the repo it was opened for instead of following focus.
     this.pinned = given?.root ? { cwd: given.root, on: given.on ?? null } : null;
-    // In the Git panel it shows my-git's picked commit, read-only, as the side panel `panel`.
-    this.source = props()?.source === "git"; this.panel = props()?.panel ?? "changes";
-    const mode = this.source ? "git" : this.pinned ? "pane" : "panel";
+    // In the Git or PRs panel it shows that panel's pick, read-only, as the side panel `panel`. The PRs panel's own list
+    // part is `list`, so this one's is `files` there.
+    this.source = SELECTIONS[props()?.source] ? props().source : null; this.selection = SELECTIONS[this.source];
+    this.panel = props()?.panel ?? "changes"; this.listPart = this.source === "pr" ? "files" : "list";
+    const mode = this.source ?? (this.pinned ? "pane" : "panel");
     this.roots = new Map(); this.parts = {};
     this.splitKey = `split:${mode}`; this.scopeKey = `scope:${mode}`;
     this.split = localStorage.getItem(this.splitKey) !== "false";
@@ -110,8 +112,9 @@ export default class Changes extends View {
     this.findInput.on("focus", (_e, cx) => { this.findFocused = this.findLanded = true; cx.notify(); });
     this.findInput.on("blur", (_e, cx) => { this.findFocused = false; cx.notify(); });
     this.refresh(cx);
-    // A commit never changes: its copy refreshes only when the pick or the repo does, or to retry a failed read.
-    cx.timer.every(10000, (cx) => { if (!this.source || this.retry) this.refresh(cx); });
+    // A commit never changes: its copy refreshes only when the pick or the repo does, or to retry a failed read while
+    // shown.
+    cx.timer.every(10000, (cx) => { if (!this.source || (this.retry && panelShown(this.panel))) this.refresh(cx); });
   }
 
   where() { return this.pinned ?? location(); }
@@ -119,8 +122,10 @@ export default class Changes extends View {
   repoOf(where) { return (this.source && this.roots.get(JSON.stringify(where))) || where; }
   placeKey() { return JSON.stringify(this.repoOf(this.where())); }
   key() {
-    const pick = this.source && shared(SELECTION);
-    return JSON.stringify({ ...this.repoOf(this.where()), scope: this.source ? `git:${pick?.sha ?? ""}:${pick?.gen ?? ""}` : this.scope });
+    const pick = this.source && shared(this.selection);
+    const scope = this.source === "pr" ? `pr:${JSON.stringify(pick && [pick.on, pick.root, pick.repo, pick.number, pick.head, pick.base, pick.gen])}`
+      : this.source ? `git:${pick?.sha ?? ""}:${pick?.gen ?? ""}` : this.scope;
+    return JSON.stringify({ ...this.repoOf(this.where()), scope });
   }
 
   setScope(scope, cx) {
@@ -141,6 +146,22 @@ export default class Changes extends View {
         if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
       } catch (e) { if (this.key() === context) this.note = { text: `Fetch failed: ${e}` }; }
       finally { this.fetching = false; this.again = true; this.refresh(cx); cx.notify(); }
+    });
+    cx.notify();
+  }
+
+  // The pull request's missing tips, by id from the repo's GitHub remote: objects only (prFetch).
+  fetchPr(cx) {
+    const c = this.picked;
+    if (!c?.missing?.length || !c.fetchUrl || this.fetching || this.context !== this.key()) return;
+    const root = this.root, on = this.on, context = this.context;
+    this.fetching = true; this.note = null;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("git", prFetch(c.fetchUrl, c.missing), { cwd: root, on });
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+      } catch (e) { if (this.key() === context) this.note = { text: `Fetch failed (git): ${e.message ?? e}` }; }
+      finally { this.fetching = false; this.refresh(cx); cx.notify(); }
     });
     cx.notify();
   }
@@ -190,7 +211,7 @@ export default class Changes extends View {
       try {
         // A cached root is trusted while the pick agrees with it; a pick for another repo asks again (a folder can
         // become a repo of its own).
-        const folder = JSON.stringify({ cwd, on }), known = this.source && this.roots.get(folder), pick = known && shared(SELECTION);
+        const folder = JSON.stringify({ cwd, on }), known = this.source && this.roots.get(folder), pick = known && shared(this.selection);
         const trusted = known && (!pick || (pick.root === known.root && pick.on === known.on));
         const top = trusted ? { code: 0, stdout: known.root } : await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
         if (this.source) { if (top.code === 0) this.roots.set(folder, { root: top.stdout.trim(), on }); else this.roots.delete(folder); }
@@ -253,24 +274,28 @@ export default class Changes extends View {
     }
   }
 
-  // my-git's picked commit, when it is for this repo, against its first parent (nothing, for a root commit).
+  // The pick, when it is for this repo: my-git's commit against its first parent (nothing, for a root commit), or
+  // my-github's pull request head against where it left its base.
   async loadCommit(root, on, context, cx) {
-    const pick = shared(SELECTION), commit = pick?.on === on && pick?.root === root ? pick : null;
+    const pick = shared(this.selection), commit = pick?.on === on && pick?.root === root ? pick : null, pr = this.source === "pr";
     const git = (args) => exec("git", [...HISTORY, ...args], { cwd: root, on });
-    let files = [], changed = [], base = null;
+    let files = [], changed = [], base = null, sha = commit && (pr ? commit.head : commit.sha);
     try {
-      if (commit) base = await commitBase(git, commit.sha, commit.parents);
+      if (commit) base = pr ? await prBase(git, commit.head, commit.base) : await commitBase(git, commit.sha, commit.parents);
       if (base && !base.unavailable) {
-        const tree = (...options) => git([...treeDiff(base, commit.sha, ...options), "--"]);
+        const tree = (...options) => git([...treeDiff(base, sha, ...options), "--"]);
         const [names, numbers] = await Promise.all([tree("--name-status", "-z"), tree("--numstat", "-z")]);
         for (const r of [names, numbers]) if (r.code !== 0) throw failure(r);
         changed = parseNameStatus(names.stdout); files = statFiles(changed, parseNumstat([numbers.stdout]));
       }
     } catch (e) { throw new Error(`Preview unavailable: ${e.message ?? e}`); }
     if (this.key() !== context) return;
-    this.retry = false;
-    this.root = root; this.on = on; this.picked = commit && { ...commit, ...base }; this.files = files; this.limited = changed.length > 1000;
-    this.error = base?.unavailable ? `Parent object unavailable: ${base.parent.slice(0, 7)} is not in this clone` : null;
+    // A pull request's missing history can arrive from a fetch elsewhere.
+    this.retry = pr && Boolean(base?.unavailable);
+    this.root = root; this.on = on; this.picked = commit && { ...commit, sha, ...base }; this.files = files; this.limited = changed.length > 1000;
+    const tips = base?.missing?.map((s) => `${s === commit.head ? "head" : "base"} ${s.slice(0, 7)}`).join(" and ");
+    this.error = !base?.unavailable ? null : !pr ? `Parent object unavailable: ${base.parent.slice(0, 7)} is not in this clone`
+      : tips ? `Pull request ${tips} not in this clone${commit.fetchUrl ? ": Fetch it above" : ""}` : `Comparison unavailable: ${base.unavailable}`;
     await this.showFiles(context, cx, (e) => `Preview unavailable: ${e.message ?? e}`);
   }
 
@@ -557,19 +582,36 @@ export default class Changes extends View {
       .when(!c, (e) => e.child(div().text_color(t.dim).child("Pick a commit above")));
   }
 
+  // The open pull request, in the scope bar's place. Its title and base name come from the current pick: a same-gen
+  // pick changed only those, without a new diff.
+  prLine(t) {
+    const c = this.picked, pick = shared(this.selection), p = c && pick?.gen === c.gen ? pick : c;
+    return h_flex().id("pr-line").h(z(34)).flex_none().px(10).gap(6).items_center().border_b(1).border_color(t.border).text_size(z(11)).text_color(t.muted)
+      .when(Boolean(c), (e) => e.tooltip(`#${p.number} ${p.title}\nhead ${c.head}\nbase ${p.baseRef} ${c.base}${c.parent ? `\nmerge base ${c.parent}` : ""}`)
+        .child(div().flex_none().text_color(t.dim).child(`#${p.number}`))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(p.title))
+        .when(Boolean(c.parent), (e) => e.child(div().flex_none().max_w(160).truncate().px(5).rounded(4).border_1().border_color(t.border).text_color(t.dim)
+          .child(`vs ${p.baseRef} @ ${c.parent.slice(0, 7)}`)))
+        .when(c.missing.length > 0 && Boolean(c.fetchUrl), (e) => e.child(this.headerButton("pr-fetch", "mods/my-changes/fetch.svg", false,
+          this.fetching ? "Fetching…" : `Fetch ${c.missing.length > 1 ? "head and base" : c.missing[0] === c.head ? "the head" : "the base"} from GitHub`,
+          (cx) => this.fetchPr(cx), t, this.fetching))))
+      .when(!c, (e) => e.child(div().text_color(t.dim).child(pick ? "Loading…" : "Pick a pull request above")));
+  }
+
   render(cx) {
     z = scaler(panelSize(this.panel));
     if (this.key() !== this.context) this.refresh(cx);
     // A row belongs to the place it opened for; a scope switch keeps it.
     if (this.finding && this.findPlace !== this.placeKey()) this.closeFind();
-    const request = !this.pinned && findRequest(this.panel);
+    // In the PRs panel the find key finds pull requests; this list's find has its own button.
+    const request = !this.pinned && this.source !== "pr" && findRequest(this.panel);
     if (request && request.id !== this.findId) {
       this.findId = request.id; this.openFind(cx);
       setShared("panel.find", null);
     }
     const shown = this.shown(), rows = this.listRows();
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
-    const diffPx = partPx(this.panel, "diff"), mono = codeMetrics(diffPx), dz = scaler(diffPx), lz = scaler(partPx(this.panel, "list")), cz = scaler(partPx(this.panel, "commit"));
+    const diffPx = partPx(this.panel, "diff"), mono = codeMetrics(diffPx), dz = scaler(diffPx), lz = scaler(partPx(this.panel, this.listPart)), cz = scaler(partPx(this.panel, "commit"));
     const part = (box, content, opts) => sizedPart(box, content, { ui: this.parts, panel: this.panel, t, hide: this.drag, ...opts });
     const { direction, axis, cursor } = SIDES[this.side], across = axis === "across", share = this.share[axis];
     const listBox = across ? v_flex().flex_none().min_h(0).h_full().w(`${share * 100}%`)
@@ -581,7 +623,8 @@ export default class Changes extends View {
     const note = (size) => div().px(10).pb(8).text_size(size).text_color(t.ansi1).child(this.note.text);
     this.changed = CHANGED[darkColour(t.background) ? "dark" : "light"];
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
-    const nothing = this.source ? (this.picked ? "No changes in this commit" : "No commit picked") : this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
+    const nothing = this.source === "pr" ? (this.picked ? "No changes in this pull request" : "No pull request open")
+      : this.source ? (this.picked ? "No changes in this commit" : "No commit picked") : this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
     const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t, mono)] : [this.rows, (r, t) => this.diffRow(r, t, mono)];
     const list = v_virtual_list("changes-diff", items.length, mono.row, (i) => items[i].key, (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full()
       .on_item_click((key, cx) => this.expand(key, cx));
@@ -591,13 +634,15 @@ export default class Changes extends View {
         if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
       })
       .child(h_flex().h(z(42)).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-        .child(div().font_semibold().child(this.source ? "Commit" : "Changes"))
+        .child(div().font_semibold().child(this.source === "pr" ? "Files changed" : this.source ? "Commit" : "Changes"))
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(z(10)).text_color(t.muted).child(this.query ? `${shown.length} of ${this.files.length} files` : `${this.files.length} files`))
         .child(div().flex_1()).child(div().text_size(z(11)).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(z(11)).text_color(t.ansi1).child(`−${del}`))
         .child(this.headerButton("changes-side", `mods/my-changes/panel-${this.side}.svg`, false, `List on the ${this.side} · move it`, (cx) => this.moveList(cx), t))
         .child(this.headerButton("changes-split", "mods/my-changes/columns.svg", this.split, this.split ? "Unified view" : "Side-by-side view", (cx) => this.toggleSplit(cx), t))
-        .when(!this.pinned && !this.source, (e) => e.child(this.headerButton("changes-pane", "mods/my-changes/open-pane.svg", false, "Open in a pane", () => this.openPane(), t))))
-      .child(this.source ? this.commitLine(t) : this.scopeBar(t))
+        .when(!this.pinned && !this.source, (e) => e.child(this.headerButton("changes-pane", "mods/my-changes/open-pane.svg", false, "Open in a pane", () => this.openPane(), t)))
+        .when(this.source === "pr", (e) => e.child(this.headerButton("changes-find", "mods/workspace-chrome/search.svg", this.finding, this.finding ? "Close find" : "Find changed file",
+          (cx) => { if (this.finding) this.closeFind(); else this.openFind(cx); cx.notify(); }, t))))
+      .child(this.source === "pr" ? this.prLine(t) : this.source ? this.commitLine(t) : this.scopeBar(t))
       .when(Boolean(this.finding), (e) => e.child(this.findRow(t, this.query ? `${shown.length} found` : "")))
       .child(div().id("changes-body").flex()[direction]().flex_1().min_h(0).relative()
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
@@ -606,7 +651,7 @@ export default class Changes extends View {
           .children(rows.map((row) => row.file ? this.fileRow(row.file, row.depth, t, lz) : this.folderRow(row, t, lz)))
           .when(!shown.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : !this.root ? "No folder" : this.files.length ? "No matching changed files" : nothing))))
           .when(this.limited, el => el.child(div().px(6).py(4).text_size(lz(11)).text_color(t.dim).child("Showing the first 1,000 changed files"))),
-        { part: "list", label: this.query ? "Matches" : "Changed files" }))
+        { part: this.listPart, label: this.query ? "Matches" : "Changed files" }))
       .child(divider.id("changes-divider").flex_none()[cursor]().on_mouse_down("left", (_e, cx) => this.startDrag(cx)))
       .child(part(v_flex().flex_1().min_w(0).min_h(0), v_flex().flex_1().min_h(0)
         .child(div().flex_1().min_h(0).relative().font_family(mono.family).text_size(mono.size)
