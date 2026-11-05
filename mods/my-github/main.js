@@ -13,7 +13,7 @@ const ISSUE = "number,title,state,author,labels,updatedAt,url", PR = `${ISSUE},i
 const VIEW = ",body,comments,createdAt";
 const KINDS = {
   issues: { cmd: "issue", title: "Issues", noun: "issue", path: "issues", filters: ["open", "closed", "all"], list: ISSUE, view: ISSUE + VIEW },
-  prs: { cmd: "pr", title: "Pull requests", noun: "pull request", path: "pulls", filters: ["open", "closed", "merged", "all"], list: PR, view: PR + VIEW + ",headRefOid,baseRefOid,changedFiles" },
+  prs: { cmd: "pr", title: "Pull requests", noun: "pull request", path: "pulls", filters: ["open", "closed", "merged", "all"], list: PR, view: PR + VIEW + ",headRefOid,baseRefOid" },
 };
 const REVIEW = { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "review required" };
 
@@ -198,8 +198,8 @@ export default class GitHub extends View {
       if (gen === this.detailGen) {
         this.detail = view; this.detailError = null;
         if (this.kind === "prs") {
-          const prev = shared(PR_SELECTION), next = prSelection(prev, view, where, { gen: this.picks + 1, refresh });
-          if (next !== prev) { this.picks = Math.max(this.picks, next.gen); this.publish(next); }
+          const prev = shared(PR_SELECTION), next = prSelection(prev, view, where, { gen: ++this.picks, refresh });
+          if (next !== prev) this.publish(next);
         }
       }
     } catch (e) {

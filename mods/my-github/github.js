@@ -36,9 +36,10 @@ export function ghDefault(remotes) {
 // Precedence: saved choice > gh default > upstream > origin. -> { repo, choices } or { error }. `choices` are the
 // github.com repos to switch between, upstream first.
 const UNSUPPORTED = "Only github.com is supported in v1";
+const counted = (remotes) => ["upstream", "origin"].map((name) => remotes.find((r) => r.remote === name)).filter(Boolean);
 
 export function pickRepo({ saved, remotes }) {
-  const named = ["upstream", "origin"].map((name) => remotes.find((r) => r.remote === name)).filter(Boolean);
+  const named = counted(remotes);
   if (!named.length) return { error: "No origin or upstream remote" };
   const choices = [...new Set(named.filter((r) => r.host === "github.com").map((r) => r.repo))];
   if (!choices.length) return { error: UNSUPPORTED };
@@ -48,18 +49,18 @@ export function pickRepo({ saved, remotes }) {
 }
 
 // The `upstream` or `origin` remote (upstream first) on github.com that is `repo`, or null.
-export const remoteFor = (remotes, repo) =>
-  ["upstream", "origin"].map((name) => remotes.find((r) => r.remote === name)).find((r) => r?.host === "github.com" && r.repo === repo) ?? null;
+export const remoteFor = (remotes, repo) => counted(remotes).find((r) => r.host === "github.com" && r.repo === repo) ?? null;
 
 // The pull request the PRs panel's changes block shows (shared `pr.selection`), from a detail view read in `where`.
 // `prev` comes back when nothing changed; it keeps its gen when only the labels changed; anything else, or a refresh,
 // takes `gen`.
-const LABELS = ["title", "url", "changedFiles", "baseRef"];
+// `sha` is the head, named as my-git's `git.selection` names its commit.
+const LABELS = ["title", "baseRef"];
 export function prSelection(prev, view, where, { gen, refresh = false }) {
   const pick = { on: where.on ?? null, root: where.root, repo: where.repo, fetchUrl: where.remote?.url ?? null, number: view.number,
-    head: view.headRefOid, base: view.baseRefOid };
+    sha: view.headRefOid, base: view.baseRefOid };
   const same = Boolean(prev) && !refresh && Object.keys(pick).every((k) => prev[k] === pick[k]);
-  const next = { gen: same ? prev.gen : gen, ...pick, title: view.title, url: view.url, changedFiles: view.changedFiles, baseRef: view.baseRefName };
+  const next = { gen: same ? prev.gen : gen, ...pick, title: view.title, baseRef: view.baseRefName };
   return same && LABELS.every((k) => prev[k] === next[k]) ? prev : next;
 }
 

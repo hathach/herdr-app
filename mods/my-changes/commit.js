@@ -28,9 +28,13 @@ export async function commitBase(git, sha, parents) {
   }
   const parent = list[0] ?? null, merge = list.length > 1;
   if (!parent) return { parent, merge, unavailable: false };
-  const r = await git(["cat-file", "-e", parent]);
+  return { parent, merge, unavailable: !(await present(git, parent)) };
+}
+
+async function present(git, sha) {
+  const r = await git(["cat-file", "-e", sha]);
   if (r.code > 1) throw failure(r);
-  return { parent, merge, unavailable: r.code === 1 };
+  return r.code === 0;
 }
 
 // diff-tree args for a commit against its base (its first parent, or nothing for a root commit).
@@ -38,16 +42,12 @@ export const treeDiff = (base, sha, ...options) => ["diff-tree", "--no-commit-id
   "--no-textconv", "--no-color", ...options, ...(base.parent ? [base.parent, sha] : ["--root", sha])];
 
 // What a pull request is compared with: where its head left its base, as GitHub's Files changed does. -> { parent,
-// merge: false, missing, unavailable }: `missing` the tips whose objects are not here, `unavailable` why there is no
-// comparison, else null.
+// missing, unavailable }: `missing` the tips whose objects are not here, `unavailable` why there is no comparison, else
+// null.
 export async function prBase(git, head, base) {
-  const missing = [];
-  for (const sha of [head, base]) {
-    const r = await git(["cat-file", "-e", sha]);
-    if (r.code > 1) throw failure(r);
-    if (r.code === 1) missing.push(sha);
-  }
-  const answer = (parent, unavailable) => ({ parent, merge: false, missing, unavailable });
+  const here = await Promise.all([head, base].map((sha) => present(git, sha)));
+  const missing = [head, base].filter((_sha, i) => !here[i]);
+  const answer = (parent, unavailable) => ({ parent, missing, unavailable });
   if (missing.length) return answer(null, "not in this clone");
   // Exit 1: no common history here.
   const r = await git(["merge-base", "--all", base, head]);

@@ -2,11 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { failure, parseParents, commitBase, treeDiff, prBase, prFetch } from "./commit.js";
-import { readdirSync, existsSync } from "node:fs";
 
 // Fixture commits ignore this machine's signing setup.
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "A", GIT_AUTHOR_EMAIL: "a@x", GIT_COMMITTER_NAME: "A", GIT_COMMITTER_EMAIL: "a@x",
@@ -14,6 +13,12 @@ const ENV = { ...process.env, GIT_AUTHOR_NAME: "A", GIT_AUTHOR_EMAIL: "a@x", GIT
 const runner = (dir) => async (args) => {
   const r = spawnSync("git", ["--no-optional-locks", "--no-lazy-fetch", ...args], { cwd: dir, env: ENV, encoding: "utf8" });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+};
+// Fixture setup: git in `dir`, throwing on failure.
+const shIn = (dir) => (...args) => {
+  const r = spawnSync("git", args, { cwd: dir, env: ENV, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(r.stderr);
+  return r.stdout.trim();
 };
 
 test("parseParents reads only the header", () => {
@@ -33,7 +38,7 @@ test("treeDiff compares with the parent, or a root commit with nothing", () => {
 
 test("commitBase: ordinary, merge, root, a shallow boundary with and without its parent object", async () => {
   const dir = mkdtempSync(join(tmpdir(), "my-changes-commit-")), clone = mkdtempSync(join(tmpdir(), "my-changes-shallow-"));
-  const sh = (...args) => { const r = spawnSync("git", args, { cwd: dir, env: ENV, encoding: "utf8" }); if (r.status !== 0) throw new Error(r.stderr); return r.stdout.trim(); };
+  const sh = shIn(dir);
   const commit = (name) => { writeFileSync(join(dir, name), name); sh("add", "--", name); sh("commit", "-q", "-m", name); return sh("rev-parse", "HEAD"); };
   try {
     sh("init", "-q", "-b", "main");
@@ -54,32 +59,32 @@ test("commitBase: ordinary, merge, root, a shallow boundary with and without its
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(clone, { recursive: true, force: true }); }
 });
 
-// A repo with history: main a-b, then `pr` from a with c, main merged into pr2 (criss-cross with side), and a merged head.
+// main a-b; pr: c on a, later merged into main (`merged`); m1 and m2 each merge x and y, so they have two merge bases;
+// lone shares no history.
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "my-changes-pr-"));
-  const sh = (...args) => { const r = spawnSync("git", args, { cwd: dir, env: ENV, encoding: "utf8" }); if (r.status !== 0) throw new Error(r.stderr); return r.stdout.trim(); };
+  const sh = shIn(dir);
   const commit = (name) => { writeFileSync(join(dir, name), name); sh("add", "--", name); sh("commit", "-q", "-m", name); return sh("rev-parse", "HEAD"); };
   sh("init", "-q", "-b", "main");
   const a = commit("a"), b = commit("b");
   sh("checkout", "-q", "-b", "pr", a); const c = commit("c");
   sh("checkout", "-q", "-b", "x", a); const x = commit("x");
   sh("checkout", "-q", "-b", "y", a); const y = commit("y");
-  // Two merge bases: m1 and m2 each merge x and y.
   sh("checkout", "-q", "x"); sh("merge", "-q", "--no-ff", "-m", "m1", "y"); const m1 = sh("rev-parse", "HEAD");
   sh("checkout", "-q", "-B", "y2", y); sh("merge", "-q", "--no-ff", "-m", "m2", x); const m2 = sh("rev-parse", "HEAD");
   sh("checkout", "-q", "main"); sh("merge", "-q", "--no-ff", "-m", "merge pr", "pr"); const merged = sh("rev-parse", "HEAD");
   sh("checkout", "-q", "--orphan", "lone"); sh("rm", "-q", "-rf", "."); const lone = commit("lone");
-  return { dir, sh, a, b, c, m1, m2, merged, lone };
+  return { dir, a, b, c, m1, m2, merged, lone };
 }
 
 test("prBase: merge base, missing tips, merged head, criss-cross, unrelated, shallow", async () => {
   const f = fixture(), clone = mkdtempSync(join(tmpdir(), "my-changes-pr-shallow-"));
   try {
-    const git = runner(f.dir), none = { missing: [], merge: false };
+    const git = runner(f.dir), none = { missing: [] };
     assert.deepEqual(await prBase(git, f.c, f.b), { ...none, parent: f.a, unavailable: null });
     const gone = "1".repeat(40);
-    assert.deepEqual(await prBase(git, gone, f.b), { parent: null, merge: false, missing: [gone], unavailable: "not in this clone" });
-    assert.deepEqual(await prBase(git, f.c, gone), { parent: null, merge: false, missing: [gone], unavailable: "not in this clone" });
+    assert.deepEqual(await prBase(git, gone, f.b), { parent: null, missing: [gone], unavailable: "not in this clone" });
+    assert.deepEqual(await prBase(git, f.c, gone), { parent: null, missing: [gone], unavailable: "not in this clone" });
     assert.deepEqual(await prBase(git, f.c, f.merged), { ...none, parent: null, unavailable: "the head is already in the base" });
     assert.deepEqual(await prBase(git, f.m1, f.m2), { ...none, parent: null, unavailable: "more than one merge base" });
     assert.deepEqual(await prBase(git, f.lone, f.b), { ...none, parent: null, unavailable: "no common history with the base" });
@@ -92,7 +97,7 @@ test("prBase: merge base, missing tips, merged head, criss-cross, unrelated, sha
 
 test("prFetch takes exactly the commits and writes no refs, FETCH_HEAD or commit graph", async () => {
   const f = fixture(), clone = mkdtempSync(join(tmpdir(), "my-changes-pr-fetch-"));
-  const sh = (...args) => { const r = spawnSync("git", args, { cwd: clone, env: ENV, encoding: "utf8" }); if (r.status !== 0) throw new Error(r.stderr); return r.stdout; };
+  const sh = shIn(clone);
   try {
     sh("init", "-q", "-b", "main");
     // A ref of its own gives a commit graph something to cover; the remote's refspec would map fetched refs.
@@ -103,7 +108,7 @@ test("prFetch takes exactly the commits and writes no refs, FETCH_HEAD or commit
     assert.equal(sh("for-each-ref"), before);
     assert.equal(existsSync(join(clone, ".git", "FETCH_HEAD")), false);
     assert.equal(existsSync(join(clone, ".git", "objects", "info", "commit-graph")) || existsSync(join(clone, ".git", "objects", "info", "commit-graphs")), false);
-    assert.deepEqual(await prBase(runner(clone), f.c, f.b), { parent: f.a, merge: false, missing: [], unavailable: null });
+    assert.deepEqual(await prBase(runner(clone), f.c, f.b), { parent: f.a, missing: [], unavailable: null });
     // Polling reads leave refs and the index alone.
     const index = existsSync(join(clone, ".git", "index"));
     await prBase(runner(clone), f.c, f.b);

@@ -142,13 +142,14 @@ test("remoteFor: upstream before origin, github.com only, never another fork", (
 
 test("prSelection keeps, relabels or renews the selection", () => {
   const where = { on: null, root: "/r", repo: "org/x", remote: { url: "git@github.com:org/x.git" } };
-  const view = { number: 7, title: "T", url: "u", changedFiles: 2, headRefOid: "h", baseRefOid: "b", baseRefName: "main" };
+  const view = { number: 7, title: "T", headRefOid: "h", baseRefOid: "b", baseRefName: "main" };
   const first = prSelection(null, view, where, { gen: 1 });
-  assert.deepEqual(first, { gen: 1, on: null, root: "/r", repo: "org/x", fetchUrl: "git@github.com:org/x.git", number: 7, head: "h", base: "b", title: "T", url: "u", changedFiles: 2, baseRef: "main" });
+  assert.deepEqual(first, { gen: 1, on: null, root: "/r", repo: "org/x", fetchUrl: "git@github.com:org/x.git", number: 7, sha: "h", base: "b", title: "T", baseRef: "main" });
   assert.equal(prSelection(first, { ...view }, where, { gen: 2 }), first);
   const relabelled = prSelection(first, { ...view, title: "T2" }, where, { gen: 2 });
   assert.equal(relabelled.gen, 1); assert.equal(relabelled.title, "T2");
-  assert.deepEqual([prSelection(first, { ...view, baseRefName: "dev" }, where, { gen: 2 })].map((s) => [s.gen, s.baseRef]), [[1, "dev"]]);
+  const rebased = prSelection(first, { ...view, baseRefName: "dev" }, where, { gen: 2 });
+  assert.deepEqual([rebased.gen, rebased.baseRef], [1, "dev"]);
   assert.equal(prSelection(first, { ...view, headRefOid: "h2" }, where, { gen: 2 }).gen, 2);
   assert.equal(prSelection(first, { ...view, baseRefOid: "b2" }, where, { gen: 2 }).gen, 2);
   assert.equal(prSelection(first, view, { ...where, on: "box" }, { gen: 2 }).gen, 2);
