@@ -1,8 +1,9 @@
 // Modified from Herdr's shipped `files` mod (Apache-2.0): tree and preview together, tree on any side.
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { languageOf, highlightLines, COLORS } from "./syntax.js";
+import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextView } from "gpui-base";
+import { languageOf, COLORS } from "./syntax.js";
+import { markdownDoc, overBytes } from "./doc.js";
 import { sizedPart, panelSize, partPx, scaler, codeMetrics } from "./part-size.js";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, window, run, layout, shared, setShared } from "herdr";
 
@@ -14,10 +15,15 @@ function location() {
 }
 const key = () => JSON.stringify(location());
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
-// The editor colours C, C++ and Python natively (by these names) but draws Markdown and reST plain; those get coloured
-// read-only lines instead.
-const EDITOR = { c: "c", cpp: "cpp", python: "py" }, LINES = new Set(["markdown", "rst"]);
-const PER_FOLDER = 500, TOTAL = 5000, FOUND = 200;
+// The editor colours C, C++ and Python natively (by these names).
+const EDITOR = { c: "c", cpp: "cpp", python: "py" };
+const PER_FOLDER = 500, TOTAL = 5000, FOUND = 200, SHOWN = 400000;
+// reST goes to pandoc as one argument, which Linux caps at 128 KiB.
+const RST_BYTES = 120 * 1024;
+// The editor's reST grammar takes seconds on larger sources (180 KB: 4.5 s), so those show as plain text.
+const RST_GRAMMAR = 64 * 1024;
+// Forms pandoc follows (spacing, case); the sandbox would drop the file, leaving the document incomplete.
+const INCLUDE = /^[ \t]*\.\.[ \t]+include[ \t]*::/im;
 // A splitter's share lands on the nearest twelfth when its drag ends, like the side panel's.
 const twelfth = (share) => Math.min(11, Math.max(1, Math.round(share * 12))) / 12;
 // far: the tree sits at the end of the body, so its share counts back from that edge.
@@ -63,6 +69,19 @@ function findPaths(list, query, path = (x) => x) {
     .sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]).map((r) => r[3]);
 }
 
+// reST as GitHub Markdown, converted here from the loaded text, so a file on another machine needs no pandoc there.
+async function rstToMarkdown(text) {
+  try {
+    const r = await exec("sh", ["-c", 'printf "%s" "$1" | pandoc --sandbox -f rst -t gfm', "rst", text], { timeout: 10000 });
+    // For includes INCLUDE misses: the sandbox drops them with only a warning; its other warnings (translations) leave
+    // the output whole.
+    const missing = r.stderr.match(/Could not load include[^\n]*/)?.[0];
+    if (r.code !== 0 || missing) return { note: missing ?? (r.stderr.trim().split("\n")[0] || `pandoc exited ${r.code}`) };
+    const doc = markdownDoc(r.stdout);
+    return doc.note ? { note: `${doc.note} as Markdown` } : doc;
+  } catch (e) { return { note: `Cannot run pandoc (${e?.message ?? e})` }; }
+}
+
 async function directory(path, on) {
   if (!on && window()?.platform === "windows") {
     const r = await exec("powershell", ["-NoProfile", "-Command", "& { param($p) @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)) } }) | ConvertTo-Json -Compress } '" + path.replaceAll("'", "''") + "'"]);
@@ -80,7 +99,7 @@ async function directory(path, on) {
 
 export default class Files extends View {
   init(_props, cx) {
-    this.saved = new Map(); this.parts = {}; this.side = localStorage.getItem("tree"); if (!Object.keys(SIDES).includes(this.side)) this.side = "left";
+    this.saved = new Map(); this.parts = {}; this.loads = 0; this.raw = localStorage.getItem("raw") === "1"; this.side = localStorage.getItem("tree"); if (!Object.keys(SIDES).includes(this.side)) this.side = "left";
     this.share = { across: twelfth(Number(localStorage.getItem("tree:across")) || 5 / 12), down: twelfth(Number(localStorage.getItem("tree:down")) || 5 / 12) };
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.query = ""; this.findHandle = cx.focus_handle(); this.findInput = InputState.new({ placeholder: "Find file in repo" });
@@ -176,10 +195,11 @@ export default class Files extends View {
 
   // base: the folder `path` is relative to, the repo root for find results, else the tree's root.
   show(path, cx, base = this.root) {
-    this.code?.release(); this.code = null; this.lines = null; this.file = path; this.fileBase = base; this.fileError = null;
+    this.code?.release(); this.code = null; this.source = null; this.doc = null; this.truncated = false; this.file = path; this.fileBase = base; this.fileError = null;
+    const load = ++this.loads;
     if (!path || !cx) return;
     const context = this.context, on = this.on;
-    const current = () => this.file === path && this.fileBase === base && this.current(context);
+    const current = () => this.loads === load && this.current(context);
     cx.spawn(async cx => {
       try {
         const text = await readTextFile(`${base}/${path}`, { on });
@@ -187,25 +207,39 @@ export default class Files extends View {
         if (text === null) { this.fileError = "This file is no longer available"; return; }
         if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
         const ext = path.includes(".") ? path.split(".").pop() : "txt", lang = languageOf(path);
-        const value = text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text;
-        if (LINES.has(lang)) {
-          const lines = value.replace(/\n$/, "").split("\n");
-          this.lines = { lines, runs: highlightLines(lang, lines), chars: lines.reduce((n, l) => Math.max(n, l.length), 0) };
-          return;
+        const shown = text.slice(0, SHOWN);
+        this.truncated = text.length > SHOWN;
+        this.source = { text: shown, language: lang === "rst" && shown.length > RST_GRAMMAR ? "txt" : EDITOR[lang] ?? LANG[ext] ?? ext };
+        if (lang === "markdown") this.doc = markdownDoc(shown);
+        if (lang === "rst") this.doc = overBytes(shown, RST_BYTES) ? { note: `Over ${RST_BYTES / 1024} KiB` } : INCLUDE.test(shown) ? { note: "Includes another file" } : { pending: true };
+        const converted = this.doc?.pending ? rstToMarkdown(shown) : null;
+        this.syncEditor();
+        if (converted) {
+          cx.notify();
+          const doc = await converted;
+          if (current()) { this.doc = doc; this.syncEditor(); }
         }
-        this.openEditor(value, EDITOR[lang] ?? LANG[ext] ?? ext);
       } catch { if (current()) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
       finally { cx.notify(); }
     });
   }
 
+  // A document's editor is made only when shown (Raw, or it can't render): a large one takes a while.
+  editorShown() {
+    return Boolean(this.source) && (this.raw || !this.doc || Boolean(this.doc.note));
+  }
+
+  syncEditor() {
+    if (this.editorShown() && (!this.code || this.fontStale())) this.openEditor();
+  }
+
   // The editor takes its font when made; a font change makes it again from the loaded text (its scroll goes back to the top).
-  openEditor(value, language) {
-    const t = theme(), mono = previewMetrics();
-    const code = EditorState.new({ language, readonly: true, value, font_family: mono.family, font_size: mono.size,
+  openEditor() {
+    const t = theme(), mono = previewMetrics(), { text, language } = this.source;
+    const code = EditorState.new({ language, readonly: true, value: text, font_family: mono.family, font_size: mono.size,
       syntax: Object.fromEntries(["keyword", "string", "comment", "function", "type", "number", "constant"].map(k => [k, t[COLORS[k]]])) });
     this.code?.release();
-    this.code = code; this.editorFont = { family: mono.family, size: mono.size, language };
+    this.code = code; this.editorFont = { family: mono.family, size: mono.size };
   }
 
   fontStale() {
@@ -216,11 +250,11 @@ export default class Files extends View {
   // A state can't be made during render, so the check that finds a stale font hands it to a timer; steps that land
   // while it waits share its rebuild.
   refont(cx) {
-    if (this.refonting || !this.fontStale()) return;
+    if (this.refonting || !this.editorShown() || !this.fontStale()) return;
     this.refonting = true;
     cx.timer.after(150, cx => {
       this.refonting = false;
-      if (this.fontStale()) { this.openEditor(this.code.value(), this.editorFont.language); cx.notify(); }
+      if (this.editorShown() && this.fontStale()) { this.openEditor(); cx.notify(); }
     });
   }
 
@@ -306,20 +340,6 @@ export default class Files extends View {
       .when(!list.length, el => el.child(div().p(8).text_size(z(12)).text_color(t.dim).child("No matching files")));
   }
 
-  // Read-only like the editor, without its selection; the same font and line numbers.
-  linesView(t, mono) {
-    const { lines, runs, chars } = this.lines, gutter = Math.ceil(String(lines.length).length * mono.char) + 20;
-    const row = (i) => h_flex().h(mono.row).flex_none().w_full()
-      .child(div().w(gutter).flex_none().pr(12).text_right().text_color(t.dim).child(String(i + 1)))
-      .child(runs[i] ? h_flex().flex_1().min_w(0).children(runs[i].map(([text, category]) =>
-        div().flex_none().whitespace_nowrap().when(Boolean(COLORS[category]), e => e.text_color(t[COLORS[category]])).child(text)))
-        : div().flex_1().min_w(0).whitespace_nowrap().child(lines[i]));
-    const list = v_virtual_list("files-lines", lines.length, mono.row, i => String(i), range => Array.from({ length: range.end - range.start }, (_, k) => row(range.start + k))).size_full();
-    return div().flex_1().min_w(0).min_h(0).relative().pt(4).font_family(mono.family).text_size(mono.size)
-      .child(div().id("files-lines-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, chars * mono.char + gutter + 30)).h_full().child(list)))
-      .child(Scrollbar.vertical("files-lines").viewport_from_layout().absolute().inset_0());
-  }
-
   moveTree(cx) {
     const sides = Object.keys(SIDES);
     this.side = sides[(sides.indexOf(this.side) + 1) % sides.length];
@@ -379,9 +399,16 @@ export default class Files extends View {
     const handle = axis === "across" ? div().w(5).h_full().cursor_col_resize().child(div().w(1).h_full().bg(t.border)).flex().justify_center()
       : div().h(5).w_full().cursor_row_resize().child(div().h(1).w_full().bg(t.border)).flex().flex_col().justify_center();
     const mono = previewMetrics();
-    const view = this.code ? Editor.new(this.code).flex_1().min_w(0).min_h(0) : this.lines ? this.linesView(t, mono)
-      : div().flex_1().p(12).text_color(t.dim).child(this.fileError || "Loading file…");
-    const preview = part(v_flex().flex_1().min_w(0).min_h(0), view, { part: "preview", label: "Preview", code: this.code || this.lines ? mono.size : null });
+    const doc = this.raw ? null : this.doc, rendered = doc?.md !== undefined;
+    const notes = [this.truncated && `Showing the first ${SHOWN / 1000}k characters`, doc?.note && `${doc.note}: showing the source`];
+    const content = rendered ? div().id(`files-doc-${this.loads}`).flex_1().min_w(0).min_h(0).overflow_y_scrollbar().px(16).py(12)
+      .child(TextView.markdown(`files-md-${this.loads}`, doc.md).selectable().w_full().on_link_click((url, cx) => { if (/^(https?|mailto):/i.test(url)) cx.open_url(url); }))
+      : this.code && !doc?.pending ? Editor.new(this.code).flex_1().min_w(0).min_h(0) : null;
+    const view = content ? v_flex().flex_1().min_w(0).min_h(0)
+      .children(notes.filter(Boolean).map(note => div().flex_none().px(12).py(4).border_b(1).border_color(t.border).text_size(z(11)).text_color(t.dim).child(note)))
+      .child(content)
+      : div().flex_1().p(12).text_color(t.dim).child(this.fileError || (doc?.pending ? "Rendering…" : "Loading file…"));
+    const preview = part(v_flex().flex_1().min_w(0).min_h(0), view, { part: "preview", label: "Preview", code: this.code && !rendered ? mono.size : null });
     return div().id("files-body").flex().flex_1().min_h(0).relative()[direction]()
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
       .child(tree.child(list))
@@ -390,6 +417,13 @@ export default class Files extends View {
       // While dragging, a cover keeps the pointer's moves and release even over the editor.
       .when(Boolean(this.drag), el => el.child(div().id("files-drag").absolute().inset_0()[axis === "across" ? "cursor_col_resize" : "cursor_row_resize"]()
         .on_mouse_move((e, cx) => this.dragTo(e, cx)).on_mouse_up("left", (_e, cx) => this.endDrag(cx)).on_hover((inside, cx) => { if (!inside) this.endDrag(cx); })));
+  }
+
+  modes(t) {
+    const chip = (raw, label) => div().id(`files-${label.toLowerCase()}`).h(z(22)).px(8).flex().flex_none().items_center().rounded(6).cursor_pointer()
+      .when(this.raw === raw, e => e.bg(t.selected).text_color(t.foreground)).hover(s => s.bg(t.hover))
+      .on_click((_e, cx) => { this.raw = raw; localStorage.setItem("raw", raw ? "1" : "0"); this.syncEditor(); cx.notify(); }).child(label);
+    return h_flex().flex_none().gap(2).text_size(z(11)).text_color(t.muted).child(chip(false, "Rendered")).child(chip(true, "Raw"));
   }
 
   button(id, icon, tip, onClick, t) {
@@ -411,6 +445,7 @@ export default class Files extends View {
       .child(h_flex().h(z(42)).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Files"))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(z(12)).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? ""))
+        .when(Boolean(this.doc), el => el.child(this.modes(t)))
         .when(Boolean(this.file), el => el
           .child(this.button("files-side", `mods/my-files/panel-${this.side}.svg`, `Tree on the ${this.side} · move it`, cx => this.moveTree(cx), t))
           .child(this.button("files-close", "mods/my-files/x.svg", "Close the preview", cx => { this.show(null); cx.notify(); }, t))))

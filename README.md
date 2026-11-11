@@ -41,8 +41,15 @@ default panel text size; without it they use the terminal's size.
 ### Files
 
 `mods/my-files`: Herdr's Files panel showing the tree and a file preview together, with the tree on any side and
-resizable in twelfths. Markdown and reST previews are coloured; they are read-only lines without text selection. Other
-files use Herdr's editor.
+resizable in twelfths. Markdown and reST previews are rendered with selectable text, and a Rendered/Raw switch in the
+header (the panel remembers it) shows the source; the source and every other file use Herdr's read-only editor, which
+selects and copies too.
+
+- reST goes through the local `pandoc --sandbox` to GitHub Markdown, files on other machines too.
+- A missing pandoc, an `include`, reST over 120 KiB, or Markdown (also pandoc's) over 128 KiB or 2,000 table cells shows
+  the source with a note saying why: Herdr's Markdown view lays out larger documents for seconds, and a big table again
+  on every redraw. reST sources over 64K characters show uncoloured, since the editor's reST colouring takes seconds.
+- Links open in the browser (http, https, mailto); relative links do nothing yet. Images and raw HTML don't render.
 
 ### Changes
 
