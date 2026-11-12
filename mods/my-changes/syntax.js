@@ -10,6 +10,21 @@ const LABEL = { ...EXT, python: "python", python3: "python", py3: "python" };
 export const COLORS = { keyword: "ansi5", directive: "ansi5", marker: "ansi5", string: "ansi2", literal: "ansi2", comment: "dim",
   function: "ansi4", link: "ansi4", type: "ansi3", heading: "ansi3", number: "ansi1", constant: "ansi6", emphasis: "ansi6" };
 
+// The read-only editor's language for a path and its text: it colours C, C++ and Python natively (by these names),
+// others by extension.
+const EDITOR = { c: "c", cpp: "cpp", python: "py" };
+const EDITOR_EXT = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
+// The editor's reST grammar takes seconds on larger sources (180 KB: 4.5 s), so those show as plain text.
+const RST_GRAMMAR = 64 * 1024;
+export function editorLanguage(path, text) {
+  const ext = path.includes(".") ? path.split(".").pop() : "txt", lang = languageOf(path);
+  if (lang === "rst" && text.length > RST_GRAMMAR) return "txt";
+  return EDITOR[lang] ?? EDITOR_EXT[ext] ?? ext;
+}
+
+// The editor's syntax colours from the theme.
+export const editorSyntax = (t) => Object.fromEntries(["keyword", "string", "comment", "function", "type", "number", "constant"].map((k) => [k, t[COLORS[k]]]));
+
 export function languageOf(path) {
   const name = path.split(/[\\/]/).pop(), dot = name.lastIndexOf(".");
   return dot > 0 ? EXT[name.slice(dot + 1).toLowerCase()] ?? null : null;

@@ -1,11 +1,11 @@
 // Modified from Herdr's shipped `changes` mod (Apache-2.0): side-by-side view, open in a pane, branch scope.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, Editor, EditorState } from "gpui-base";
 import { diffRows, splitRows, wholeSides, colourSides, paint, diffView, revealFor, fullRows, hunkEnd, cutLine, parseNumstat, parseNameStatus } from "./diff.js";
-import { languageOf, COLORS } from "./syntax.js";
+import { languageOf, COLORS, editorLanguage, editorSyntax } from "./syntax.js";
 import { sizedPart, panelSize, partPx, scaler, codeMetrics, PILL_SLOT } from "./part-size.js";
 import { fileTree, treeRows } from "./tree.js";
-import { lineOn, selects, pickLine, nextSelection, hiddenCount, reference, selectedText, textReason, sidesMatch, lineCount } from "./selection.js";
+import { lineOn, selects, pickLine, nextSelection, hiddenCount, reference, selectedText, textReason, sidesMatch, lineCount, diffText } from "./selection.js";
 import { SIDES, nextSide, sideOf, shareKey, twelfth, shareOf, shareAt } from "./part-split.js";
 import { failure, commitBase, treeDiff, prBase, prFetch } from "./commit.js";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, run, layout, shared, setShared, props } from "herdr";
@@ -103,7 +103,7 @@ export default class Changes extends View {
     this.picked = null; this.files = []; this.rows = []; this.pairs = []; this.diffChars = 0; this.message = ""; this.handle = cx.focus_handle();
     // A line range picked in the diff, what copying it reads (`copy`, the shown content), the rows' generation (list
     // keys carry it) and short commit ids by repo and id.
-    this.diffFocus = cx.focus_handle(); this.sel = null; this.copy = null; this.rowsGen = 0; this.shorts = new Map();
+    this.diffFocus = cx.focus_handle(); this.textMode = false; this.sel = null; this.copy = null; this.rowsGen = 0; this.shorts = new Map();
     this.input = InputState.new({ placeholder: "Commit message" });
     this.input.on("change", (_e, cx) => {
       const hadMessage = Boolean(this.message.trim());
@@ -172,6 +172,31 @@ export default class Changes extends View {
       finally { this.fetching = false; this.refresh(cx); cx.notify(); }
     });
     cx.notify();
+  }
+
+  // Text view: the shown diff in a readonly editor, for selecting any text. Its state is made by syncText.
+  toggleText(cx) {
+    this.textMode = !this.textMode;
+    if (!this.textMode) { this.textState?.release(); this.textState = this.textKey = this.textValue = null; this.diffFocus.focus(); }
+    cx.notify();
+  }
+
+  // A state can't be made during render, so render hands new rows or a look change to a timer. A refresh that finds the
+  // same text keeps the editor, with its selection and scroll.
+  syncText(mono, t, cx) {
+    if (!this.textMode) return;
+    const syntax = editorSyntax(t), look = `${this.open}|${mono.family}|${mono.size}|${JSON.stringify(syntax)}`, key = `${this.rowsGen}|${look}`;
+    if (key === this.textKey) return;
+    this.textKey = key;
+    cx.timer.after(0, (cx) => {
+      if (!this.textMode) return;
+      const value = diffText(this.rows, this.copy?.sides);
+      if (value === this.textValue && look === this.textLook) return;
+      this.textState?.release();
+      this.textState = EditorState.new({ language: editorLanguage(this.open ?? "", value), readonly: true, value, font_family: mono.family, font_size: mono.size, line_numbers: false, folding: false, syntax });
+      this.textValue = value; this.textLook = look;
+      cx.notify();
+    });
   }
 
   toggleSplit(cx) {
@@ -741,8 +766,10 @@ export default class Changes extends View {
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     const nothing = this.src ? (this.picked ? this.src.empty : this.src.none) : this.base ? `No changes vs ${this.base}` : "No uncommitted changes";
     const sel = this.selectedLines();
+    this.syncText(mono, t, cx);
+    const text = Boolean(this.open && this.textState);
     const [items, draw] = this.split ? [this.pairs, (p, t) => this.splitRow(p, t, mono, sel)] : [this.rows, (r, t) => this.diffRow(r, t, mono, sel)];
-    const list = v_virtual_list("changes-diff", items.length, mono.row, (i) => `${this.rowsGen}|${items[i].key}`, (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full()
+    const list = !text && v_virtual_list("changes-diff", items.length, mono.row, (i) => `${this.rowsGen}|${items[i].key}`, (range) => items.slice(range.start, range.end).map((item) => draw(item, t))).size_full()
       .on_item_click((key, cx) => this.clickRow(key, cx));
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(z(13)).track_focus(this.handle)
       .on_key_down((e, cx) => {
@@ -754,6 +781,7 @@ export default class Changes extends View {
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(z(10)).text_color(t.muted).child(this.query ? `${shown.length} of ${this.files.length} files` : `${this.files.length} files`))
         .child(div().flex_1()).child(div().text_size(z(11)).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(z(11)).text_color(t.ansi1).child(`−${del}`))
         .child(this.headerButton("changes-side", `mods/my-changes/panel-${this.side}.svg`, false, `List on the ${this.side} · move it`, (cx) => this.moveList(cx), t))
+        .child(this.headerButton("changes-text", "mods/my-changes/text.svg", this.textMode, this.textMode ? "Diff view (escape)" : "Text view: select and copy any text", (cx) => this.toggleText(cx), t))
         .child(this.headerButton("changes-split", "mods/my-changes/columns.svg", this.split, this.split ? "Unified view" : "Side-by-side view", (cx) => this.toggleSplit(cx), t))
         .when(!this.pinned && !this.source, (e) => e.child(this.headerButton("changes-pane", "mods/my-changes/open-pane.svg", false, "Open in a pane", () => this.openPane(), t)))
         .when(this.source === "pr", (e) => e.child(this.headerButton("changes-find", "mods/workspace-chrome/search.svg", this.finding, this.finding ? "Close find" : "Find changed file",
@@ -773,15 +801,17 @@ export default class Changes extends View {
         .child(div().id("changes-diff-box").flex_1().min_h(0).relative().font_family(mono.family).text_size(mono.size).track_focus(this.diffFocus)
           .on_mouse_down("left", (e) => this.pressDiff(e))
           .on_key_down((e, cx) => {
+            // The editor copies its own selection; escape goes back to the diff.
+            if (text) { if (e.key === "escape") { this.toggleText(cx); cx.stop_propagation(); } return; }
             const { control, shift, alt } = e.modifiers;
             if (control && !alt && e.key.toLowerCase() === "c") { this.copyOut(shift ? "reference" : "text", cx); cx.stop_propagation(); }
             else if (e.key === "escape" && sel) { this.clearSelection(cx); cx.stop_propagation(); }
           })
           // In a horizontal scroller the list keeps its last measured width, leaving the side-by-side divider off centre.
-          .child(this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, this.diffChars * mono.char + mono.numbers + 30)).h_full().child(list)))
-          .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
+          .child(text ? div().id("changes-text").size_full().pl(8).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Editor.new(this.textState).size_full()) : this.split ? list : div().id("changes-diff-x").size_full().overflow_x_scrollbar().child(div().w_full().min_w(Math.max(300, this.diffChars * mono.char + mono.numbers + 30)).h_full().child(list)))
+          .when(!text, (e) => e.child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0()))
           .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child("Select a file to view its changes"))))
-        .when(Boolean(this.open && this.copy), (e) => e.child(this.copyBar(sel, t, dz)))
+        .when(Boolean(this.open && this.copy && !text), (e) => e.child(this.copyBar(sel, t, dz)))
         .when(noted("diff"), (e) => e.child(note(dz(11)).pt(6))),
         { part: "diff", label: "Diff", code: mono.size }))
       // While dragging, a cover keeps the pointer's moves and release even over the diff.

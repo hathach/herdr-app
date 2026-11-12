@@ -2,7 +2,7 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextView } from "gpui-base";
-import { languageOf, COLORS } from "./syntax.js";
+import { languageOf, editorLanguage, editorSyntax } from "./syntax.js";
 import { markdownDoc, overBytes } from "./doc.js";
 import { sizedPart, panelSize, partPx, scaler, codeMetrics } from "./part-size.js";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, window, run, layout, shared, setShared } from "herdr";
@@ -14,14 +14,9 @@ function location() {
   return { cwd: pane?.cwd || f?.cwd || space?.folder, on, space: space?.id };
 }
 const key = () => JSON.stringify(location());
-const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
-// The editor colours C, C++ and Python natively (by these names).
-const EDITOR = { c: "c", cpp: "cpp", python: "py" };
 const PER_FOLDER = 500, TOTAL = 5000, FOUND = 200, SHOWN = 400000;
 // reST goes to pandoc as one argument, which Linux caps at 128 KiB.
 const RST_BYTES = 120 * 1024;
-// The editor's reST grammar takes seconds on larger sources (180 KB: 4.5 s), so those show as plain text.
-const RST_GRAMMAR = 64 * 1024;
 // Forms pandoc follows (spacing, case); the sandbox would drop the file, leaving the document incomplete.
 const INCLUDE = /^[ \t]*\.\.[ \t]+include[ \t]*::/im;
 // A splitter's share lands on the nearest twelfth when its drag ends, like the side panel's.
@@ -206,10 +201,10 @@ export default class Files extends View {
         if (!current()) return;
         if (text === null) { this.fileError = "This file is no longer available"; return; }
         if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
-        const ext = path.includes(".") ? path.split(".").pop() : "txt", lang = languageOf(path);
+        const lang = languageOf(path);
         const shown = text.slice(0, SHOWN);
         this.truncated = text.length > SHOWN;
-        this.source = { text: shown, language: lang === "rst" && shown.length > RST_GRAMMAR ? "txt" : EDITOR[lang] ?? LANG[ext] ?? ext };
+        this.source = { text: shown, language: editorLanguage(path, shown) };
         if (lang === "markdown") this.doc = markdownDoc(shown);
         if (lang === "rst") this.doc = overBytes(shown, RST_BYTES) ? { note: `Over ${RST_BYTES / 1024} KiB` } : INCLUDE.test(shown) ? { note: "Includes another file" } : { pending: true };
         const converted = this.doc?.pending ? rstToMarkdown(shown) : null;
@@ -237,7 +232,7 @@ export default class Files extends View {
   openEditor() {
     const t = theme(), mono = previewMetrics(), { text, language } = this.source;
     const code = EditorState.new({ language, readonly: true, value: text, font_family: mono.family, font_size: mono.size,
-      syntax: Object.fromEntries(["keyword", "string", "comment", "function", "type", "number", "constant"].map(k => [k, t[COLORS[k]]])) });
+      syntax: editorSyntax(t) });
     this.code?.release();
     this.code = code; this.editorFont = { family: mono.family, size: mono.size };
   }

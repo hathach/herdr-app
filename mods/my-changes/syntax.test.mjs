@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { highlightLines, languageOf } from "./syntax.js";
+import { highlightLines, languageOf, editorLanguage } from "./syntax.js";
 import { diffRows, splitRows, wholeSides, colourSides, paint, CUT, parseNumstat, parseNameStatus } from "./diff.js";
 
 // Each line as "text" with coloured pieces written [category:text].
@@ -155,4 +155,10 @@ test("long lines draw plain, keep the state, and stay fast", () => {
     highlightLines(lang, ["[".repeat(4000), "`".repeat(4000), "*".repeat(4000), '"'.repeat(3999)]);
     assert.ok(Date.now() - start < 1000, `${lang} took ${Date.now() - start} ms`);
   }
+});
+
+test("the editor's language: native names for C, C++ and Python, else by extension; large reST plain", () => {
+  assert.deepEqual(["a.h", "b.hpp", "c.py", "d.tsx", "e.toml", "f.rs", "Makefile"].map((p) => editorLanguage(p, "")), ["c", "cpp", "py", "js", "yaml", "rs", "txt"]);
+  assert.equal(editorLanguage("doc.rst", "x".repeat(64 * 1024)), "rst");
+  assert.equal(editorLanguage("doc.rst", "x".repeat(64 * 1024 + 1)), "txt");
 });

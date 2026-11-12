@@ -97,3 +97,17 @@ export function selectedText(lines, rows, sel) {
   const out = rowLines(rows, sel);
   return out.reason ? out : { text: out.lines.join("\n") };
 }
+
+// The shown rows as unified diff text for the Text view: reveal controls dropped, a cut line whole from its side's
+// original lines when known.
+export function diffText(rows, sides) {
+  const out = [];
+  for (const row of rows) {
+    if (row.kind === "more") continue;
+    if (row.kind === "@") { out.push(row.range ?? row.text); continue; }
+    if (row.raw === undefined) { out.push(row.text); continue; }
+    const side = row.kind === "-" ? "old" : "new";
+    out.push(row.kind + (isCut(row.raw) ? sides?.[side]?.[lineOn(row, side) - 1] ?? row.raw : row.raw));
+  }
+  return out.join("\n");
+}

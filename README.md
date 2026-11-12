@@ -14,6 +14,7 @@ My customizations for the [Herdr](https://herdr.dev) desktop app, tracked in pla
   colours, 20 more unchanged lines per click, a commit box and an open-in-a-pane button.
 - [Line selection](#line-selection): select diff lines and copy their reference (`path:L6-L8`) to ask an agent about
   them, or copy their text.
+- [Text view](#text-view): the diff as text in a read-only editor, to select and copy any part of it.
 - [Issues and PRs](#issues-and-prs) through `gh`: list, filter, search, detail with comments and checks, comment,
   close/reopen, and the open PR's changed files and diff.
 - [Git](#git): a repo's branches and commits, and the picked commit's changed files and diff.
@@ -73,6 +74,14 @@ selects and copies too.
   deleted lines, the Git and PRs panels. With no selection it copies the path.
 - `ctrl-c` (Copy text) copies the lines without numbers or markers, whole where the view cuts them.
 - The bar under the diff shows the reference, the range's size (hidden lines included) and why a copy is off.
+
+#### Text view
+
+- The header's I-beam button shows the diff as text in a read-only editor, to select and copy any part of it: drag,
+  double-click a word, shift-click, `ctrl-c`. Escape or the button goes back to the diff.
+- The shown hunks in unified order, side by side included, with their `@@` headers and `+`/`-`/space markers; long
+  lines whole. Coloured by the file's language as in the Files preview, without the change bands.
+- A refresh that finds the same diff keeps the selection; the view starts at the top each time it opens.
 
 ### Issues and PRs
 

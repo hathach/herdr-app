@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { diffRows, splitRows, diffView, fullRows, cutLine, CUT } from "./diff.js";
-import { pickLine, nextSelection, selects, span, hiddenCount, reference, selectedText, textReason, sidesMatch } from "./selection.js";
+import { pickLine, nextSelection, selects, span, hiddenCount, reference, selectedText, textReason, sidesMatch, diffText } from "./selection.js";
 
 // Old lines 1-5, new lines 1-6: line 3 replaced by two lines, so the sides' numbers differ below it.
 const rows = diffRows(["@@ -1,5 +1,6 @@", " a", " b", "-c", "+C1", "+C2", " d", " e"]);
@@ -97,4 +97,17 @@ test("textReason says why text can't be copied, or null", () => {
   const gap = diffRows(["@@ -1,2 +1,2 @@", " a", " b", "@@ -9,1 +9,1 @@", " i"]);
   assert.match(textReason(null, gap, { side: "new", anchor: 2, head: 9 }), /not loaded/);
   assert.equal(textReason(["a", "b"], [], { side: "new", anchor: 1, head: 2 }), null);
+});
+
+test("the Text view is the shown rows as unified diff, without reveal controls", () => {
+  const whole = fullRows(["@@ -1,30 +1,30 @@", ...Array.from({ length: 9 }, (_, i) => ` l${i + 1}`), "-o10", "+n10", ...Array.from({ length: 20 }, (_, i) => ` l${i + 11}`)].join("\n"));
+  const { rows: shown } = diffView(whole.rows, new Map());
+  assert.equal(diffText(shown, whole.sides), ["@@ -7,7 +7,7 @@", " l7", " l8", " l9", "-o10", "+n10", " l11", " l12", " l13"].join("\n"));
+  assert.equal(diffText(diffRows(["@@ -1 +1 @@ main()", "-a", "+b", "\\ No newline at end of file"]), null), "@@ -1 +1 @@ main()\n-a\n+b\n\\ No newline at end of file");
+});
+
+test("the Text view shows a cut line whole when its side is known, else as cut", () => {
+  const long = "x".repeat(5000), cut = diffRows(["@@ -1 +1 @@", `-${long}`, `+${long}y`].map(cutLine));
+  assert.equal(diffText(cut, { old: [long], new: [`${long}y`] }), `@@ -1 +1 @@\n-${long}\n+${long}y`);
+  assert.equal(diffText(cut, null).split("\n")[1], `-${long.slice(0, 3999)}${CUT}`);
 });

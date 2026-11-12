@@ -184,7 +184,7 @@ export function diffView(full, reveal, tag = "", context = 3) {
     const up = i > 0 && gapAt[i - 1], down = end < n && gapAt[end];
     if (up) {
       const step = Math.min(STEP, gaps.get(up));
-      rows.push({ kind: "@", text: `${range}  ↑ Show ${step} preceding lines`, key: `${tag}up:${up}`, gap: up, dir: "up", step });
+      rows.push({ kind: "@", text: `${range}  ↑ Show ${step} preceding lines`, range, key: `${tag}up:${up}`, gap: up, dir: "up", step });
     } else rows.push({ kind: "@", text: range, key: `h${i}` });
     for (let j = i; j < end; j++) { rows.push(full[j]); pass(full[j]); }
     if (down) {
